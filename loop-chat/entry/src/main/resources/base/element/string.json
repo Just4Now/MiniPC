@@ -1,0 +1,32 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Loop ReAct agent entry module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Loop agent chat"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "agent"
+    },
+    {
+      "name": "internet_permission_reason",
+      "value": "Loop calls your configured LLM endpoint over the network."
+    },
+    {
+      "name": "nearby_permission_reason",
+      "value": "Loop connects to the compute phone over the near-field link."
+    },
+    {
+      "name": "bluetooth_permission_reason",
+      "value": "Loop uses Bluetooth to discover the compute phone."
+    },
+    {
+      "name": "location_permission_reason",
+      "value": "Loop uses approximate location because Bluetooth scanning requires it."
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "compute-inference-v2",
+  "protocol": "nearby-chat-v1",
+  "version": 2,
+  "promptFormat": "loop-react-split-v1",
+  "limits": {
+    "maxPromptBytes": 32768,
+    "maxWireBytes": 65536,
+    "maxDeltaBytes": 1024,
+    "maxOutputBytes": 32768,
+    "hardInferenceMs": 180000
+  }
+}

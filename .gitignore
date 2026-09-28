@@ -1,0 +1,22 @@
+# Build outputs
+**/build/
+**/.preview/
+**/.cxx/
+**/.hvigor/
+*.hap
+
+# Dependencies
+oh_modules/
+node_modules/
+
+# Machine-local SDK paths
+**/local.properties
+
+# Logs and pulled device dumps
+*.log
+*.bin
+*.jsonl
+
+# OS
+.DS_Store
+Thumbs.db
