@@ -24,13 +24,13 @@ function discover(relative) {
   walk(path.join(root, relative));
   return found.sort();
 }
-const agentSuite = path.join(root, 'loop-chat', 'agent_core', 'tests', 'run-all.cjs');
+const agentSuite = path.join(root, 'apps/agent-client', 'agent-core', 'tests', 'run-all.cjs');
 const groups = {
-  legacy: [...discover('legacy/chat-end/entry/src/main/ets'), ...discover('legacy/model-end/entry/src/main/ets')],
+  legacy: [...discover('legacy/chat-client/entry/src/main/ets'), ...discover('legacy/compute-node/entry/src/main/ets')],
   agent: [agentSuite,
-    ...discover('gate-a/compute-probe/entry/src/main/ets'),
-    ...discover('examples/nearby-client/entry/src/main/ets')],
-  protocol: [path.join(root, 'loop-minipc/scripts/test-all.cjs')]
+    ...discover('apps/compute-node/entry/src/main/ets'),
+    ...discover('examples/nearby-validation-client/entry/src/main/ets')],
+  protocol: [path.join(root, 'packages/inference-protocol/scripts/test-all.cjs')]
 };
 const suites = mode === 'all' ? Object.values(groups).flat() : groups[mode];
 let compiler = process.env.TYPESCRIPT_PATH;

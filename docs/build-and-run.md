@@ -4,18 +4,18 @@
 
 | 构建目标 | 工程目录 | 应用职责 |
 | --- | --- | --- |
-| `agent-chat` | `loop-chat` | Agent 聊天、工具执行与汇总 |
-| `agent-compute` | `gate-a/compute-probe` | 本地推理、设备组网和路由 |
-| `legacy-chat` | `legacy/chat-end` | 基础聊天端 |
-| `legacy-compute` | `legacy/model-end` | 基础算力端 |
+| `agent-client` | `apps/agent-client` | Agent 聊天、工具执行与汇总 |
+| `compute-node` | `apps/compute-node` | 本地推理、设备组网和路由 |
+| `legacy-chat-client` | `legacy/chat-client` | 基础聊天端 |
+| `legacy-compute-node` | `legacy/compute-node` | 基础算力端 |
 
-`examples/nearby-client` 是近场协议验证客户端，可在 DevEco Studio 中单独打开。它不替代 Agent 聊天端。`loop-minipc` 是 JavaScript 协议参考实现，没有 HAP 构建目标。
+`examples/nearby-validation-client` 是近场协议验证客户端，可在 DevEco Studio 中单独打开。它不替代 Agent 聊天端。`packages/inference-protocol` 是 JavaScript 协议参考实现，没有 HAP 构建目标。
 
 ## 工具与依赖
 
 需要 Node.js、JDK 17、HarmonyOS SDK、hvigor 和 `ohpm`。工程的兼容 SDK 为 `6.0.2(22)`，目标 SDK 为 `6.1.0(23)`；设备还需提供对应的系统能力，SDK 编译成功不能代替设备支持检查。
 
-Agent 聊天端引用 AGenUI HAR。可使用 [获取脚本](../loop-chat/scripts/fetch-agenui.sh)，该脚本固定下载版本并校验 SHA256，需要 Bash、curl 和 shasum；也可通过 `AGENUI_HAR` 或 `-AgenuiHar` 指定已有文件。HAR 位于 `loop-chat/libs/agenui.har`，不入库。Native 构建使用已包含的 AKI 源码和 SDK 系统库。
+Agent 聊天端引用 AGenUI HAR。可使用 [获取脚本](../apps/agent-client/scripts/fetch-agenui.sh)，该脚本固定下载版本并校验 SHA256，需要 Bash、curl 和 shasum；也可通过 `AGENUI_HAR` 或 `-AgenuiHar` 指定已有文件。HAR 位于 `apps/agent-client/libs/agenui.har`，不入库。Native 构建使用已包含的 AKI 源码和 SDK 系统库。
 
 ## 命令行构建
 
@@ -28,8 +28,8 @@ $env:DEVECO_SDK_HOME = '<HarmonyOS SDK 目录>'
 $env:HVIGOR_JS = '<hvigor.js 的完整路径>'
 $env:AGENUI_HAR = '<agenui.har 的完整路径>'
 
-.\scripts\build-hap.ps1 -Target agent-chat -InstallDependencies
-.\scripts\build-hap.ps1 -Target agent-compute -InstallDependencies
+.\scripts\build-hap.ps1 -Target agent-client -InstallDependencies
+.\scripts\build-hap.ps1 -Target compute-node -InstallDependencies
 ```
 
 `-InstallDependencies` 执行 `ohpm install --all`；依赖安装完成后可以省略。其他目标使用相同入口。脚本从环境/参数定位工具，并在本地忽略目录连接命令行 SDK 自带插件。
@@ -38,7 +38,7 @@ $env:AGENUI_HAR = '<agenui.har 的完整路径>'
 
 ## DevEco Studio
 
-分别打开目标工程目录，例如 `loop-chat`、`gate-a/compute-probe`，同步依赖，配置签名并构建 `entry`。仓库根目录不是单个 HarmonyOS 工程。
+分别打开目标工程目录，例如 `apps/agent-client`、`apps/compute-node`，同步依赖，配置签名并构建 `entry`。仓库根目录不是单个 HarmonyOS 工程。
 
 Agent 聊天端、算力端和验证客户端使用 `com.jiuwen.registrychatui`，不同角色应安装到不同设备；在同一设备安装会更新同名应用。基础双端的应用标识以其 AppScope 为准。
 
@@ -74,3 +74,5 @@ models/Qwen2.5-7B-Instruct-Q4_N_0/
 | 模型未就绪 | 检查模型文件和设备 GEWU/KNPU 支持 |
 | 无可连接中心 | 检查信任关系、蓝牙、权限、算力服务和设备编号 |
 | 输入超过传输预算 | 缩小任务或文件范围；限制按 UTF-8 字节计，见通信协议 |
+
+旧构建目标 agent-chat、agent-compute、legacy-chat、legacy-compute 仍作为兼容别名。

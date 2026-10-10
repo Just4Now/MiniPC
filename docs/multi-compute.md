@@ -35,7 +35,7 @@ flowchart LR
 | 子任务执行窗口 | 300 秒 |
 | 汇总 | 120 秒 |
 
-这些是阶段上限，不能将 300 秒解释为包含后续汇总的整轮绝对上限。常量位于 [ParallelTaskRunner](../loop-chat/agent_core/src/main/ets/agent/parallel/ParallelTaskRunner.ets)。
+这些是阶段上限，不能将 300 秒解释为包含后续汇总的整轮绝对上限。常量位于 [ParallelTaskRunner](../apps/agent-client/agent-core/src/main/ets/agent/parallel/ParallelTaskRunner.ets)。
 
 ## 推理转发
 
@@ -49,6 +49,6 @@ flowchart LR
 
 设备身份使用安装 UID/广播指纹，显示名称不是永久身份。当前中心按组网规则分配编号；聊天端只连接中心。中心缺席判断包含等待时间与多次扫描确认，不在短暂断链时立即换号。成员变化按连接会话同步，旧连接回调和旧清单不会复活已结束会话。
 
-选举/接管逻辑见 [LinkEnhanceChannel](../gate-a/compute-probe/entry/src/main/ets/nearby/LinkEnhanceChannel.ets)，路由见 [InferenceRelay](../gate-a/compute-probe/entry/src/main/ets/llm/InferenceRelay.ets)。
+选举/接管逻辑见 [LinkEnhanceChannel](../apps/compute-node/entry/src/main/ets/nearby/LinkEnhanceChannel.ets)，路由见 [InferenceRelay](../apps/compute-node/entry/src/main/ets/llm/InferenceRelay.ets)。
 
 任务图接口 `TaskCoordinator` 是另一组库接口，并非当前页面的独立子任务执行器。GEWU 的模型会话协作也不同于这里的独立请求路由，见 [本地模型接口](local-model.md)。

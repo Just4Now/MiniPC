@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory=$true)]
-  [ValidateSet('agent-chat','agent-compute','legacy-chat','legacy-compute')]
+  [ValidateSet('agent-client','compute-node','legacy-chat-client','legacy-compute-node','agent-chat','agent-compute','legacy-chat','legacy-compute')]
   [string]$Target,
   [string]$HvigorJs = $env:HVIGOR_JS,
   [string]$AgenuiHar = $env:AGENUI_HAR,
@@ -9,10 +9,14 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $projects = @{
-  'agent-chat' = 'loop-chat'
-  'agent-compute' = 'gate-a/compute-probe'
-  'legacy-chat' = 'legacy/chat-end'
-  'legacy-compute' = 'legacy/model-end'
+  'agent-client' = 'apps/agent-client'
+  'compute-node' = 'apps/compute-node'
+  'legacy-chat-client' = 'legacy/chat-client'
+  'legacy-compute-node' = 'legacy/compute-node'
+  'agent-chat' = 'apps/agent-client'
+  'agent-compute' = 'apps/compute-node'
+  'legacy-chat' = 'legacy/chat-client'
+  'legacy-compute' = 'legacy/compute-node'
 }
 if (-not $env:DEVECO_SDK_HOME) { throw 'Set DEVECO_SDK_HOME to the installed SDK directory.' }
 if (-not $HvigorJs) {
@@ -21,11 +25,11 @@ if (-not $HvigorJs) {
 }
 if (-not (Test-Path -LiteralPath $HvigorJs -PathType Leaf)) { throw 'Set HVIGOR_JS or -HvigorJs to hvigor.js.' }
 $project = Join-Path $repoRoot $projects[$Target]
-if ($Target -eq 'agent-chat') {
+if ($Target -in @('agent-client','agent-chat')) {
   $library = Join-Path $project 'libs/agenui.har'
   if (-not (Test-Path -LiteralPath $library -PathType Leaf)) {
     if (-not $AgenuiHar -or -not (Test-Path -LiteralPath $AgenuiHar -PathType Leaf)) {
-      throw 'Agent chat needs AGenUI: use loop-chat/scripts/fetch-agenui.sh or set AGENUI_HAR / -AgenuiHar to an existing HAR.'
+      throw 'Agent chat needs AGenUI: use apps/agent-client/scripts/fetch-agenui.sh or set AGENUI_HAR / -AgenuiHar to an existing HAR.'
     }
     New-Item -ItemType Directory -Path (Split-Path $library -Parent) -Force | Out-Null
     Copy-Item -LiteralPath $AgenuiHar -Destination $library

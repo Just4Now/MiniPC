@@ -58,3 +58,6 @@ Thumbs.db
 
 # Integration validation artifacts
 .validation/
+
+# Local HAR dependencies
+*.har

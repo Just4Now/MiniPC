@@ -3,7 +3,7 @@
 ## 当前调用链
 
 ```text
-loop-chat / Index
+apps/agent-client / Index
   → ParallelTaskRunner（满足拆分条件时）或 ReActAgentRunner
   → RemoteComputeModel / InferenceClient
   → 近场算力中心 / InferenceRelay
@@ -51,4 +51,4 @@ Action: calculator[{"expression":"(12+3)*4"}]
 
 这两套接口不能混为同一条已经接线的执行路径。普通 ReAct 只能强制契约识别或 Plan 声明的必需项；框架不能证明模型从任意自然语言中识别了全部需求。
 
-工具扩展见 [工具契约](agent-tool-contracts.md)，子任务与设备调度见 [多算力协作](multi-compute.md)。源码位于 [agent_core/agent](../loop-chat/agent_core/src/main/ets/agent)。
+工具扩展见 [工具契约](agent-tool-contracts.md)，子任务与设备调度见 [多算力协作](multi-compute.md)。源码位于 [agent-core/agent](../apps/agent-client/agent-core/src/main/ets/agent)。

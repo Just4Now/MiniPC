@@ -1,6 +1,6 @@
 # 工具契约
 
-工具实现位于 [agent_core](../loop-chat/agent_core/src/main/ets)。公共执行器按契约和实际调用状态推进，领域参数处理由工具提供方负责。
+工具实现位于 [agent-core](../apps/agent-client/agent-core/src/main/ets)。公共执行器按契约和实际调用状态推进，领域参数处理由工具提供方负责。
 
 ## 注册接口
 

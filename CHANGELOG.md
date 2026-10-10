@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+- 应用工程统一为 apps/agent-client 与 apps/compute-node，协议参考库归入 packages/inference-protocol；模块目录按职责使用小写短横线命名。
+- 基础双端和验证客户端采用一致的 client/node 命名，构建目标新增对应名称并保留旧别名。
+- 统一测试辅助引用，更新依赖路径与文档链接，验证工具改为显式输入路径。
+
+
 - 基础双端归入 legacy，近场验证客户端归入 examples，共享测试辅助统一到 tests。
 - 增加 Windows/Linux 自动回归工作流、锁定编译器依赖及可移植测试模式，完整 SDK 检查保持可用。
 

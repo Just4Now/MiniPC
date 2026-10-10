@@ -17,11 +17,11 @@ npm run test:sdk
 | 参数 | 执行内容 |
 | --- | --- |
 | all | 所有根级入口 |
-| agent | agent_core 套件、算力端及近场验证客户端测试 |
+| agent | agent-core 套件、算力端及近场验证客户端测试 |
 | legacy | legacy 基础聊天端与算力端测试 |
-| protocol | loop-minipc JavaScript 参考实现测试 |
+| protocol | packages/inference-protocol JavaScript 参考实现测试 |
 
-测试入口见 [scripts/test-all.cjs](../scripts/test-all.cjs)。它调用现有测试，agent_core 的 run-all 内部还有子套件；根级入口数量不能当作独立行为用例总数。
+测试入口见 [scripts/test-all.cjs](../scripts/test-all.cjs)。它调用现有测试，agent-core 的 run-all 内部还有子套件；根级入口数量不能当作独立行为用例总数。
 
 ## CI 与完整模式
 
@@ -34,8 +34,8 @@ GitHub Actions 的 Regression 工作流在 main 的 push 和 PR 上执行，使�
 可单独运行：
 
 ```powershell
-node loop-chat/agent_core/tests/run-all.cjs
-node loop-minipc/scripts/test-all.cjs
+node apps/agent-client/agent-core/tests/run-all.cjs
+node packages/inference-protocol/scripts/test-all.cjs
 ```
 
 部分 ETS 测试用平台声明/提供方桩转译实际源码。Index 生命周期测试执行提取的方法，不编译 ArkUI 渲染 DSL。它们不能代替 SDK 全工程编译。

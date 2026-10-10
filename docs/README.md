@@ -13,4 +13,4 @@
 
 工程入口见 [仓库 README](../README.md)，功能版本见 [CHANGELOG](../CHANGELOG.md) 和 [Agent 版本记录](../CHANGELOG.agent.md)。参数以对应源码常量和运行时能力协商为准。
 
-AKI 的 API 文档随第三方源码提供，见 [AKI 中文说明](../loop-chat/entry/src/main/cpp/aki/README_zh.md)。其接口和示例属于 AKI，不表示本项目的部署状态。应用内的 Skill 指令及工作区示例是运行时资源，不属于工程使用文档。
+AKI 的 API 文档随第三方源码提供，见 [AKI 中文说明](../apps/agent-client/entry/src/main/cpp/aki/README_zh.md)。其接口和示例属于 AKI，不表示本项目的部署状态。应用内的 Skill 指令及工作区示例是运行时资源，不属于工程使用文档。
