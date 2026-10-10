@@ -81,6 +81,10 @@ node scripts/test-all.cjs all
 
 `all` 运行全部测试入口；也可使用 `agent`、`legacy`、`protocol` 分别运行 Agent、基础双端和协议参考实现的测试。测试使用受控模型和平台接口，真机运行需在目标设备上验证。
 
+## 文档
+
+详细说明见 [文档索引](docs/README.md)，包括构建部署、Agent 流程、工具契约、多算力协作、通信协议与测试。
+
 ## 版本记录
 
 功能变更见 [CHANGELOG.md](CHANGELOG.md)，Agent 版本记录见 [CHANGELOG.agent.md](CHANGELOG.agent.md)。
