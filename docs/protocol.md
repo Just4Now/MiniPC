@@ -40,7 +40,7 @@ JavaScript 参考实现位于 [loop-minipc/src/protocol](../loop-minipc/src/prot
 
 字节预算与 token 上下文长度不能互换。messages 模式当前允许至多两条，最后一条为 user；也保留 prompt 输入兼容。客户端使用能力协商预算限制提示，必要内容超限时返回错误，不静默截断任务和工具结果。
 
-当前公告 gateBPassed=false，不能把公告上下文值当成已完成的模型能力认证。基础 src 双端和 JavaScript 参考 profile 有各自边界，不套用本表。
+当前公告 gateBPassed=false，不能把公告上下文值当成已完成的模型能力认证。基础 legacy 双端和 JavaScript 参考 profile 有各自边界，不套用本表。
 
 ## 完整性与终态
 

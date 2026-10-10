@@ -1,0 +1,13 @@
+{
+  "name": "minipc-workspace",
+  "version": "0.5.0",
+  "private": true,
+  "description": "Regression tooling for the MiniPC projects",
+  "scripts": {
+    "test": "node scripts/test-all.cjs all --portable",
+    "test:sdk": "node scripts/test-all.cjs all"
+  },
+  "devDependencies": {
+    "typescript": "4.9.5"
+  }
+}

@@ -4,6 +4,9 @@
 
 ## Unreleased
 
+- 基础双端归入 legacy，近场验证客户端归入 examples，共享测试辅助统一到 tests。
+- 增加 Windows/Linux 自动回归工作流、锁定编译器依赖及可移植测试模式，完整 SDK 检查保持可用。
+
 ## v0.5.0 — 2026-10-10
 
 ### Added

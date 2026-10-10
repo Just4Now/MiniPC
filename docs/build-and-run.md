@@ -6,10 +6,10 @@
 | --- | --- | --- |
 | `agent-chat` | `loop-chat` | Agent 聊天、工具执行与汇总 |
 | `agent-compute` | `gate-a/compute-probe` | 本地推理、设备组网和路由 |
-| `legacy-chat` | `src/chat-end` | 基础聊天端 |
-| `legacy-compute` | `src/model-end` | 基础算力端 |
+| `legacy-chat` | `legacy/chat-end` | 基础聊天端 |
+| `legacy-compute` | `legacy/model-end` | 基础算力端 |
 
-`gate-a/loop-client` 是近场协议验证客户端，可在 DevEco Studio 中单独打开。它不替代 Agent 聊天端。`loop-minipc` 是 JavaScript 协议参考实现，没有 HAP 构建目标。
+`examples/nearby-client` 是近场协议验证客户端，可在 DevEco Studio 中单独打开。它不替代 Agent 聊天端。`loop-minipc` 是 JavaScript 协议参考实现，没有 HAP 构建目标。
 
 ## 工具与依赖
 

@@ -5,12 +5,14 @@ const path=require('node:path');
 const suites=['react-runner.test.cjs','parallel-runner.test.cjs','support-models.test.cjs','integration-contract.test.cjs',
  'integration-lifecycle.test.cjs','index-lifecycle.test.cjs','inference-budget.test.cjs',
  'tool-contracts.test.cjs','react-core.typecheck.cjs','support-models.typecheck.cjs','integration-contract.typecheck.cjs'];
+const selected=process.argv.includes('--portable') ? suites.filter(suite=>suite!=='support-models.typecheck.cjs') : suites;
+if(selected.length!==suites.length)console.log('Portable mode excludes the check requiring HarmonyOS SDK declarations.');
 let failed=0;
-for(const suite of suites){
+for(const suite of selected){
  console.log('\nRunning '+suite);
  const result=spawnSync(process.execPath,[path.join(__dirname,suite)],{stdio:'inherit',env:process.env});
  if(result.error){console.error(result.error);failed++;}
  else if(result.status!==0)failed++;
 }
-console.log('\n'+(suites.length-failed)+'/'+suites.length+' suites passed; SDK compilation and device tests are separate.');
+console.log('\n'+(selected.length-failed)+'/'+selected.length+' suites passed; SDK compilation and device tests are separate.');
 if(failed)process.exitCode=1;
