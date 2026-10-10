@@ -1124,6 +1124,7 @@ struct Index {
     this.setCollaborationKeepScreenOn(true);
     let finalAnswer: string | null = null;
     let finalPartial = false;
+    const startedAt = Date.now();
     try {
       const ready = await this.ensureRemoteReady(generation);
       if (!this.isCurrentRemoteRun(generation)) { return; }
@@ -1239,6 +1240,8 @@ struct Index {
           this.conversation.addUser(display);
           this.conversation.addAssistant(finalPartial ? PARTIAL_HISTORY_NOTE : finalAnswer);
           saveConversation(this.getAbilityContext(), this.conversation);
+          // Display only: never part of the conversation sent back to the model.
+          this.appendLine('Loop', '本次任务总耗时 ' + this.formatElapsed(Date.now() - startedAt), BubbleKind.OBSERVATION);
         } else {
           this.dropLivePlaceholder();
         }
@@ -1254,6 +1257,13 @@ struct Index {
         this.setCollaborationKeepScreenOn(false);
       }
     }
+  }
+
+  private formatElapsed(ms: number): string {
+    const seconds = Math.max(0, ms) / 1000;
+    if (seconds < 60) { return seconds.toFixed(1) + ' 秒'; }
+    const minutes = Math.floor(seconds / 60);
+    return minutes.toString() + ' 分 ' + (seconds - minutes * 60).toFixed(1) + ' 秒';
   }
 
   private createParallelRunner(generation: number, tools: ToolRegistry, skillSnapshot: SkillSnapshot): ParallelTaskRunner {

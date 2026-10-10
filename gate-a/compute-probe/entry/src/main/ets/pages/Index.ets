@@ -59,6 +59,8 @@ function compareDevices(left: DeviceView, right: DeviceView): number {
   return left.id < right.id ? -1 : (left.id > right.id ? 1 : 0);
 }
 
+const MAX_FINISHED_JOBS = 40;
+
 @Entry
 @Component
 struct Index {
@@ -1246,7 +1248,8 @@ struct Index {
         if (this.finishedJobs[i].key === key) this.finishedJobs.splice(i, 1);
       }
       this.finishedJobs.unshift(job);
-      if (this.finishedJobs.length > 8) this.finishedJobs.pop();
+      // Long parallel runs produce many cards (split, sub-tasks, merge); keep the whole run visible.
+      if (this.finishedJobs.length > MAX_FINISHED_JOBS) this.finishedJobs.pop();
       this.logExperiment(job);
     }
     if (this.webActiveId === id) this.webActiveId = '';
