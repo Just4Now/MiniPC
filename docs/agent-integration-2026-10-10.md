@@ -178,3 +178,7 @@ git -c push.followTags=false push origin codex/integrate-agent
 ```
 
 后续继续开发请使用 `D:\MiniPC-integrate` 的 `codex/integrate-agent` 分支。原 `D:\MiniPC`、`D:\Agent-MiniPC` 工作区保持原分支及未跟踪文件。该记录对应“独立迁移分支 + 待验收后合入主线”的阶段成果，不代表已经统一所有运行时协议或完成真机兼容验收。
+
+## 14. 后续上游同步：Agent 1.2.16 / 算力端 1.0.19
+
+Agent-MiniPC master 更新到 `c9afb306f67d619a2cf2e9ba4791611ffd5dccae` 后，迁移分支合并此提交，保留原迁移配置；全量 29/29 测试入口与 Agent 双端 SDK 构建通过。MiniPC main、基线 tag 和原仓库工作区不变。命令、网络恢复、改动范围、构建 hash 与验收边界见 [本次同步记录](agent-sync-2026-10-10-c9afb30.md)。现有草稿 PR #1 继续作为审查入口。

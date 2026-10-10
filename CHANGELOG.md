@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Changed — Agent upstream sync (2026-10-10)
+
+- Sync Agent-MiniPC `c9afb30`: Agent chat 1.2.16 and compute 1.0.19.
+- Display elapsed task time without adding it to model conversation history; retain up to 40 finished compute cards instead of 8.
+- Preserve migration signing defaults, unified entry points and test compatibility. Verification and commands: [upstream sync record](docs/agent-sync-2026-10-10-c9afb30.md).
 ### Added — Agent integration branch (2026-10-10)
 
 - Import Agent-MiniPC commit `ff76d8d1a90b6bb3cb1bb5431238bdc662b3c6ba` while preserving both repositories' Git histories. This is a migration branch, not a new stable release.

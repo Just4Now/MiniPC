@@ -6,8 +6,8 @@
 
 | 目录 | 用途 | 状态 |
 | --- | --- | --- |
-| `loop-chat` | Agent 聊天端与通用 `agent_core` | 新开发入口，导入版本 1.2.15 |
-| `gate-a/compute-probe` | Agent 算力端 | 新开发入口，导入版本 1.0.18 |
+| `loop-chat` | Agent 聊天端与通用 `agent_core` | 新开发入口，当前同步版本 1.2.16 |
+| `gate-a/compute-probe` | Agent 算力端 | 新开发入口，当前同步版本 1.0.19 |
 | `loop-minipc` | 远程推理协议的 JavaScript 参考实现与回归 | 参考实现，不是安装到设备的 HAP |
 | `src/chat-end` / `src/model-end` | 原 MiniPC 聊天端与算力端 | 保留用于功能对照，源码未被新实现覆盖 |
 | `gate-a/loop-client` | 早期近场客户端验证工程 | 历史测试入口，不作为新 Agent 聊天端 |
