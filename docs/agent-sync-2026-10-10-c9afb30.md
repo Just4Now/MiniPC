@@ -56,3 +56,9 @@
 | Agent 算力端 1.0.19 | `0CC8A837877CA31A3EAB3A993FCDA43AD591AC2FA5B7540D6C12ABE8E649CC25` |
 
 包、日志、依赖和本机 SDK 不入库。此同步没有新增业务修补，仅引入上游变更及同步文档。原 MiniPC main 仍为 `7f04eddd484d9f665b008177d5d44c153e74d5af`；基线 tag 保持原目标。具体同步提交可从本分支最近的双父提交追溯，上游 c9afb30 保留为祖先。物理设备验收仍未在此轮执行，草稿 PR 保持 Draft。
+
+## 发布确认
+
+同步合并提交为 `d0407b470f113ff2f1d5e9ed87e5bc55a8c735b2`，父提交为原迁移分支 `bb0358b` 与上游 `c9afb30`。已正常推送到 MiniPC 的 codex/integrate-agent，现有 PR #1 的说明也已更新，并确认保持 OPEN / Draft。MiniPC main 仍是 7f04edd。`git merge-base --is-ancestor agent/master HEAD` 返回 0，工作区无未提交改动。
+
+此发布确认作为单独文档提交随分支推送，不改变应用代码，也不重复运行已通过且代码未变的测试。
