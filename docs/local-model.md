@@ -9,7 +9,7 @@ RemoteComputeModel → InferenceClient → InferenceRelay
   → InferenceHost → LocalChat → libgewu_probe.so → GEWU / KNPU
 ```
 
-算力端 Native 源码位于 [gewu_probe.cpp](../gate-a/compute-probe/entry/src/main/cpp/gewu_probe.cpp)。LocalChat 从应用 `filesDir/models/Qwen2.5-7B-Instruct-Q4_N_0` 读取 api_config.json、params、tokenizer.json。Native 会话当前使用 knpu 和 max_ctx=32768；基础 src 双端另使用自己的会话配置。
+算力端 Native 源码位于 [gewu_probe.cpp](../gate-a/compute-probe/entry/src/main/cpp/gewu_probe.cpp)。LocalChat 从应用 `filesDir/models/Qwen2.5-7B-Instruct-Q4_N_0` 读取 api_config.json、params、tokenizer.json。Native 会话当前使用 knpu 和 max_ctx=32768；基础 legacy 双端另使用自己的会话配置。
 
 LocalChat 管理请求标识、回调、取消与清理。InferenceHost 负责请求准入、结果消息与任务展示；一次本地推理结束不等于整个 Agent 任务结束。SDK 构建仍依赖设备提供 libqos 等系统能力，部署步骤见 [构建与运行](build-and-run.md)。
 

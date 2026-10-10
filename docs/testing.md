@@ -5,8 +5,11 @@
 从仓库根目录运行：
 
 ```powershell
-$env:TYPESCRIPT_PATH = '<TypeScript 模块目录或 typescript.js 的路径>'
-node scripts/test-all.cjs all
+npm ci --ignore-scripts
+npm test
+# 本机已安装 HarmonyOS SDK 时设置 API 声明路径并运行完整模式
+$env:OHOS_API_PATH = '<SDK 的 ets/api 目录>'
+npm run test:sdk
 ```
 
 可选范围：
@@ -15,10 +18,14 @@ node scripts/test-all.cjs all
 | --- | --- |
 | all | 所有根级入口 |
 | agent | agent_core 套件、算力端及近场验证客户端测试 |
-| legacy | src 基础聊天端与算力端测试 |
+| legacy | legacy 基础聊天端与算力端测试 |
 | protocol | loop-minipc JavaScript 参考实现测试 |
 
 测试入口见 [scripts/test-all.cjs](../scripts/test-all.cjs)。它调用现有测试，agent_core 的 run-all 内部还有子套件；根级入口数量不能当作独立行为用例总数。
+
+## CI 与完整模式
+
+GitHub Actions 的 Regression 工作流在 main 的 push 和 PR 上执行，使用 Windows/Linux、Node.js 24 与锁定的 TypeScript 4.9.5。可移植模式运行行为检查与不依赖 SDK 的严格类型检查，仅排除 support-models.typecheck.cjs；完整模式保留该检查，需要设置 OHOS_API_PATH 指向 SDK 的 ets/api。CI 不模拟完整 SDK 构建或设备运行。
 
 ## 编译依赖
 

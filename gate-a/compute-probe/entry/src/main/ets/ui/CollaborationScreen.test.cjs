@@ -1,5 +1,5 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const ts=require('D:/command-line-tools/sdk/default/openharmony/ets/build-tools/ets-loader/node_modules/typescript');
+const ts=require(process.env.TYPESCRIPT_PATH || process.argv[2] || 'typescript');
 const source=fs.readFileSync(path.join(__dirname,'CollaborationScreen.ets'),'utf8');
 const code=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.CommonJS}}).outputText;
 const moduleObject={exports:{}};vm.runInNewContext(code,{module:moduleObject,exports:moduleObject.exports});

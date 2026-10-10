@@ -11,8 +11,8 @@ $repoRoot = Split-Path $PSScriptRoot -Parent
 $projects = @{
   'agent-chat' = 'loop-chat'
   'agent-compute' = 'gate-a/compute-probe'
-  'legacy-chat' = 'src/chat-end'
-  'legacy-compute' = 'src/model-end'
+  'legacy-chat' = 'legacy/chat-end'
+  'legacy-compute' = 'legacy/model-end'
 }
 if (-not $env:DEVECO_SDK_HOME) { throw 'Set DEVECO_SDK_HOME to the installed SDK directory.' }
 if (-not $HvigorJs) {

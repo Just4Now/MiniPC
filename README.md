@@ -17,9 +17,11 @@ MiniPC 是面向 HarmonyOS NEXT 的近场算力协同项目。聊天端负责用
 | `loop-chat/agent_core` | Agent 执行流程、工具注册和子任务编排 |
 | `gate-a/compute-probe` | 算力端 HarmonyOS 工程 |
 | `loop-minipc` | 远程推理协议的 JavaScript 参考实现及测试 |
-| `src/chat-end`、`src/model-end` | 基础聊天端与算力端工程 |
-| `gate-a/loop-client` | 近场连接与协议验证客户端 |
-| `scripts` | 测试和构建入口 |
+| `legacy/chat-end`、`legacy/model-end` | 基础聊天端与算力端工程 |
+| `examples/nearby-client` | 近场连接与协议验证客户端 |
+| `scripts`、`tests` | 构建入口与共享测试辅助 |
+| `examples` | 验证示例 |
+| `legacy` | 基础双端工程 |
 
 Agent 聊天端与算力端分别使用 `loop-chat`、`gate-a/compute-probe`。版本号以各工程的 `AppScope/app.json5` 为准。
 
@@ -74,10 +76,11 @@ filesDir/models/Qwen2.5-7B-Instruct-Q4_N_0/
 从仓库根目录运行：
 
 ```powershell
-# TypeScript 不在默认路径时，指定其模块目录或 typescript.js。
-$env:TYPESCRIPT_PATH = '<TypeScript 模块目录或 typescript.js 路径>'
-node scripts/test-all.cjs all
+npm ci --ignore-scripts
+npm test
 ```
+
+GitHub Actions 在 Windows 和 Linux 上运行可移植回归。`npm test` 只排除需要 HarmonyOS SDK 声明的检查；`npm run test:sdk` 运行完整模式。
 
 `all` 运行全部测试入口；也可使用 `agent`、`legacy`、`protocol` 分别运行 Agent、基础双端和协议参考实现的测试。测试使用受控模型和平台接口，真机运行需在目标设备上验证。
 

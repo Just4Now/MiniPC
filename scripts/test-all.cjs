@@ -4,9 +4,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
-const mode = process.argv[2] || 'all';
+const args = process.argv.slice(2);
+const mode = args.find(arg => !arg.startsWith('--')) || 'all';
+const portable = args.includes('--portable');
+if (args.some(arg => arg.startsWith('--') && arg !== '--portable')) { throw new Error('Unknown test option'); }
 if (!['all', 'legacy', 'agent', 'protocol'].includes(mode)) {
-  console.error('Usage: node scripts/test-all.cjs [all|legacy|agent|protocol]');
+  console.error('Usage: node scripts/test-all.cjs [all|legacy|agent|protocol] [--portable]');
   process.exit(2);
 }
 function discover(relative) {
@@ -21,21 +24,23 @@ function discover(relative) {
   walk(path.join(root, relative));
   return found.sort();
 }
+const agentSuite = path.join(root, 'loop-chat', 'agent_core', 'tests', 'run-all.cjs');
 const groups = {
-  legacy: [...discover('src/chat-end/entry/src/main/ets'), ...discover('src/model-end/entry/src/main/ets')],
-  agent: [path.join(root, 'loop-chat/agent_core/tests/run-all.cjs'),
+  legacy: [...discover('legacy/chat-end/entry/src/main/ets'), ...discover('legacy/model-end/entry/src/main/ets')],
+  agent: [agentSuite,
     ...discover('gate-a/compute-probe/entry/src/main/ets'),
-    ...discover('gate-a/loop-client/entry/src/main/ets')],
+    ...discover('examples/nearby-client/entry/src/main/ets')],
   protocol: [path.join(root, 'loop-minipc/scripts/test-all.cjs')]
 };
 const suites = mode === 'all' ? Object.values(groups).flat() : groups[mode];
-const compiler = process.env.TYPESCRIPT_PATH;
+let compiler = process.env.TYPESCRIPT_PATH;
+if (!compiler) { try { compiler = require.resolve('typescript'); } catch {} }
 let failures = 0;
 for (const suite of suites) {
-  const relative = path.relative(root, suite).replaceAll('\\', '/');
+  const relative = path.relative(root, suite).split(path.sep).join('/');
   console.log('\nRUN ' + relative);
-  const result = spawnSync(process.execPath, [suite, ...(compiler ? [compiler] : [])], {
-    cwd: root, stdio: 'inherit', env: process.env
+  const result = spawnSync(process.execPath, [suite, ...(compiler ? [compiler] : []), ...(portable && suite === agentSuite ? ['--portable'] : [])], {
+    cwd: root, stdio: 'inherit', env: compiler ? { ...process.env, TYPESCRIPT_PATH: compiler } : process.env
   });
   if (result.error || result.status !== 0) {
     failures++;
