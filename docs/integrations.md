@@ -1,6 +1,6 @@
 # 工具与外部集成
 
-默认工具在 [ToolRegistry](../loop-chat/agent_core/src/main/ets/agent/ToolRegistry.ets) 中注册，工具在聊天端执行。算力设备只处理模型推理请求。
+默认工具在 [ToolRegistry](../apps/agent-client/agent-core/src/main/ets/agent/ToolRegistry.ets) 中注册，工具在聊天端执行。算力设备只处理模型推理请求。
 
 ## 内置工具
 
@@ -15,13 +15,13 @@
 
 ## 配置模板
 
-配置文件位于 `loop-chat/entry/src/main/resources/rawfile/`。复制对应 example 模板到没有 example 后缀的文件后配置：
+配置文件位于 `apps/agent-client/entry/src/main/resources/rawfile/`。复制对应 example 模板到没有 example 后缀的文件后配置：
 
 | 模板 | 配置文件 | 用途 |
 | --- | --- | --- |
-| [llm_config.example.json](../loop-chat/entry/src/main/resources/rawfile/llm_config.example.json) | llm_config.json | 模型工厂的本地/HTTP 配置 |
-| [composio_config.example.json](../loop-chat/entry/src/main/resources/rawfile/composio_config.example.json) | composio_config.json | Composio 集成 |
-| [modelscope_config.example.json](../loop-chat/entry/src/main/resources/rawfile/modelscope_config.example.json) | modelscope_config.json | ModelScope Direct |
+| [llm_config.example.json](../apps/agent-client/entry/src/main/resources/rawfile/llm_config.example.json) | llm_config.json | 模型工厂的本地/HTTP 配置 |
+| [composio_config.example.json](../apps/agent-client/entry/src/main/resources/rawfile/composio_config.example.json) | composio_config.json | Composio 集成 |
+| [modelscope_config.example.json](../apps/agent-client/entry/src/main/resources/rawfile/modelscope_config.example.json) | modelscope_config.json | ModelScope Direct |
 
 这些本机配置被 Git 忽略。不要将模板中的空值或占位符当成有效授权。近场 Agent 的 RemoteComputeModel 不依赖 HTTP API key，llm_config 的云端配置不会覆盖已经发送的近场请求。
 
@@ -37,6 +37,6 @@
 
 ## A2UI 与复用接口
 
-agent_core 包含 A2UI、LoopBackend 和 AIPhone 适配接口，供接入方初始化模型、工具和配置。当前仓库不是 Android 工程，也不包含 AIPhoneDemo 应用；这些库接口不等于已经部署的外部项目。
+agent-core 包含 A2UI、LoopBackend 和 AIPhone 适配接口，供接入方初始化模型、工具和配置。当前仓库不是 Android 工程，也不包含 AIPhoneDemo 应用；这些库接口不等于已经部署的外部项目。
 
 扩展工具的输入、输出和权限规则见 [工具契约](agent-tool-contracts.md)。

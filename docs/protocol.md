@@ -4,10 +4,10 @@
 
 近场封装标识为 `nearby-chat-v1`。Agent 推理使用其中的 `infer.*` v2 消息，基础聊天使用 request/delta/done 等消息。Agent 两端各有一份协议实现，字段变更需同时修改与验证：
 
-- [聊天端 ChatProtocol](../loop-chat/entry/src/main/ets/protocol/ChatProtocol.ets)
-- [算力端 ChatProtocol](../gate-a/compute-probe/entry/src/main/ets/protocol/ChatProtocol.ets)
+- [聊天端 ChatProtocol](../apps/agent-client/entry/src/main/ets/protocol/ChatProtocol.ets)
+- [算力端 ChatProtocol](../apps/compute-node/entry/src/main/ets/protocol/ChatProtocol.ets)
 
-JavaScript 参考实现位于 [loop-minipc/src/protocol](../loop-minipc/src/protocol)，其模型 profile 默认值不必与设备工程相同。
+JavaScript 参考实现位于 [packages/inference-protocol/src/protocol](../packages/inference-protocol/src/protocol)，其模型 profile 默认值不必与设备工程相同。
 
 ## 推理消息
 
@@ -52,4 +52,4 @@ Native 回调粒度与传输分片是不同概念：算力端 LocalChat 使用 s
 
 InferenceClient 当前协商/接受等待为 10 秒，已提交请求授予 170 秒预算，交付余量为 15 秒。等待空闲的请求另受 120 秒等待上限约束；这些不是整轮 Agent 超时。
 
-只在接受前收到可重试拒绝时用新 ID 重发。接受后的失败直接返回给上层。取消先结束本地等待，再发送停止；停止确认窗口用于防止新请求抢占仍未清理的 host。各阶段常量见 [InferenceClient](../loop-chat/entry/src/main/ets/model/InferenceClient.ets)。
+只在接受前收到可重试拒绝时用新 ID 重发。接受后的失败直接返回给上层。取消先结束本地等待，再发送停止；停止确认窗口用于防止新请求抢占仍未清理的 host。各阶段常量见 [InferenceClient](../apps/agent-client/entry/src/main/ets/model/InferenceClient.ets)。

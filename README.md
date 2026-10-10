@@ -11,30 +11,33 @@ MiniPC 是面向 HarmonyOS NEXT 的近场算力协同项目。聊天端负责用
 
 ## 目录
 
+目录统一使用小写短横线命名；apps 放置应用，packages 放置协议参考库，examples 放置验证工程，legacy 放置基础实现。
+
+
 | 目录 | 用途 |
 | --- | --- |
-| `loop-chat` | Agent 聊天端 HarmonyOS 工程 |
-| `loop-chat/agent_core` | Agent 执行流程、工具注册和子任务编排 |
-| `gate-a/compute-probe` | 算力端 HarmonyOS 工程 |
-| `loop-minipc` | 远程推理协议的 JavaScript 参考实现及测试 |
-| `legacy/chat-end`、`legacy/model-end` | 基础聊天端与算力端工程 |
-| `examples/nearby-client` | 近场连接与协议验证客户端 |
+| `apps/agent-client` | Agent 聊天端 HarmonyOS 工程 |
+| `apps/agent-client/agent-core` | Agent 执行流程、工具注册和子任务编排 |
+| `apps/compute-node` | 算力端 HarmonyOS 工程 |
+| `packages/inference-protocol` | 远程推理协议的 JavaScript 参考实现及测试 |
+| `legacy/chat-client`、`legacy/compute-node` | 基础聊天端与算力端工程 |
+| `examples/nearby-validation-client` | 近场连接与协议验证客户端 |
 | `scripts`、`tests` | 构建入口与共享测试辅助 |
 | `examples` | 验证示例 |
 | `legacy` | 基础双端工程 |
 
-Agent 聊天端与算力端分别使用 `loop-chat`、`gate-a/compute-probe`。版本号以各工程的 `AppScope/app.json5` 为准。
+Agent 聊天端与算力端分别使用 `apps/agent-client`、`apps/compute-node`。版本号以各工程的 `AppScope/app.json5` 为准。
 
 ## 环境要求
 
 - Node.js、JDK 17、DevEco Studio 或 HarmonyOS 命令行工具，以及 `ohpm`。
 - 工程配置的兼容 SDK 为 `6.0.2(22)`，目标 SDK 为 `6.1.0(23)`。
 - 支持 `linkEnhance` 的 HarmonyOS 设备。
-- 聊天端构建需要 AGenUI HAR，可通过 `loop-chat/scripts/fetch-agenui.sh` 获取，或使用已有 HAR。
+- 聊天端构建需要 AGenUI HAR，可通过 `apps/agent-client/scripts/fetch-agenui.sh` 获取，或使用已有 HAR。
 
 ## 构建
 
-在 DevEco Studio 中分别打开 `loop-chat` 和 `gate-a/compute-probe`，同步依赖并构建 `entry` 模块。
+在 DevEco Studio 中分别打开 `apps/agent-client` 和 `apps/compute-node`，同步依赖并构建 `entry` 模块。
 
 Windows 命令行构建可使用下面的入口。路径占位符需替换为实际安装位置：
 
@@ -45,11 +48,11 @@ $env:DEVECO_SDK_HOME = '<HarmonyOS SDK 目录>'
 $env:HVIGOR_JS = '<hvigor.js 的完整路径>'
 $env:AGENUI_HAR = '<agenui.har 的完整路径>'
 
-.\scripts\build-hap.ps1 -Target agent-chat -InstallDependencies
-.\scripts\build-hap.ps1 -Target agent-compute -InstallDependencies
+.\scripts\build-hap.ps1 -Target agent-client -InstallDependencies
+.\scripts\build-hap.ps1 -Target compute-node -InstallDependencies
 ```
 
-基础双端工程对应 `legacy-chat`、`legacy-compute`。构建产物位于各工程的 `entry/build/default/outputs/default/`。
+基础双端工程对应 `legacy-chat-client`、`legacy-compute-node`。构建产物位于各工程的 `entry/build/default/outputs/default/`。
 
 默认构建生成 unsigned HAP。安装到设备前，需要在相应工程配置签名。聊天端和算力端使用相同 bundleName，应分别安装到不同设备。
 

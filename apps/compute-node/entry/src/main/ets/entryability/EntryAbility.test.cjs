@@ -1,0 +1,21 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const {transpile}=require('../../../../../../../tests/ets-harness.cjs');
+const screenModule={exports:{}};vm.runInNewContext(transpile(path.join(__dirname,'../ui/CollaborationScreen.ets')),{exports:screenModule.exports,Promise});
+const screen=screenModule.exports.collaborationScreen,records=[];
+const win={setWindowKeepScreenOn:async on=>{records.push(on);},getWindowProperties:()=>({isKeepScreenOn:records.at(-1)}),setWindowLimits:async()=>{},resize:async()=>{}};
+const moduleObject={exports:{}};const context={exports:moduleObject.exports,require:name=>{
+ if(name==='@kit.AbilityKit')return{UIAbility:class{},AbilityConstant:{}};
+ if(name==='@kit.BasicServicesKit')return{deviceInfo:{deviceType:'2in1'}};
+ if(name==='@kit.PerformanceAnalysisKit')return{hilog:{info(){},warn(){}}};
+ if(name==='libgewu_probe.so')return{default:{cancel(){}}};
+ if(name==='../nearby/LinkEnhanceChannel')return{nearbyChannel:{resume(){},suspend(){},destroy(){}}};
+ if(name==='../ui/CollaborationScreen')return screenModule.exports;
+ return{};
+}};
+vm.runInNewContext(transpile(path.join(__dirname,'EntryAbility.ets')),context);
+(async()=>{const ability=new moduleObject.exports.default();screen.setWanted(true);ability.onForeground();
+ ability.onWindowStageCreate({loadContent:(_url,callback)=>callback({code:0}),getMainWindowSync:()=>win});await screen.settled();assert.equal(records.at(-1),true);
+ ability.onBackground();await screen.settled();assert.equal(records.at(-1),false);
+ ability.onDestroy();await screen.settled();assert.equal(records.at(-1),false);
+ console.log('PASS actual EntryAbility binds successful code-zero callback and releases window on background/destroy');
+})().catch(e=>{console.error(e);process.exitCode=1;});
