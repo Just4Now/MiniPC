@@ -1,3 +1,4 @@
+# MiniPC baseline rules
 # HarmonyOS / hvigor build
 .hvigor/
 **/build/
@@ -30,3 +31,27 @@ src/*-signed.hap
 
 # Device screenshots, hilog dumps, and one-off probes
 _model_xfer/
+
+# Agent implementation rules
+# Build outputs
+**/build/
+**/.preview/
+**/.cxx/
+**/.hvigor/
+*.hap
+
+# Dependencies
+oh_modules/
+node_modules/
+
+# Machine-local SDK paths
+**/local.properties
+
+# Logs and pulled device dumps
+*.log
+*.bin
+*.jsonl
+
+# OS
+.DS_Store
+Thumbs.db

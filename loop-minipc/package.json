@@ -1,0 +1,8 @@
+{
+  "name": "loop-minipc",
+  "private": true,
+  "description": "Loop remote inference client and MINIPC compute gateway. Wire format matches nearby-chat-v1 plus inference v2.",
+  "scripts": {
+    "test": "node scripts/test-all.cjs"
+  }
+}

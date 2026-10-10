@@ -1,0 +1,91 @@
+// Executes actual Index methods, excluding ArkUI-only rendering DSL. No device/network I/O.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+let ts;
+for (const p of [process.env.TYPESCRIPT_PATH, 'typescript', 'D:/command-line-tools/sdk/default/openharmony/ets/build-tools/ets-loader/node_modules/typescript'].filter(Boolean)) {
+  try { ts = require(p); break; } catch {}
+}
+if (!ts) throw new Error('Set TYPESCRIPT_PATH to the local compiler module');
+const source = fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/pages/Index.ets'), 'utf8');
+const names = ['aboutToAppear','aboutToDisappear','ensureRemoteReady','isCurrentRemoteRun','runRemoteAgent','stopGeneration'];
+function method(name) {
+  const startPattern = new RegExp('^  (?:private )?(?:async )?' + name + '\\(', 'm');
+  // Build the literal opening parenthesis without depending on a regex escape in the transport.
+  const lines = source.split(String.fromCharCode(10));
+  const start = lines.findIndex(line => ['  '+name+'(', '  private '+name+'(', '  private async '+name+'('].some(p => line.startsWith(p)));
+  assert.ok(start >= 0, 'Missing actual method ' + name);
+  let end = start + 1;
+  while (end < lines.length && lines[end] !== '  }') end++;
+  assert.ok(end < lines.length, 'Missing method end ' + name);
+  return lines.slice(start, end + 1).join(String.fromCharCode(10));
+}
+const classSource = 'class Page { ' + names.map(method).join(String.fromCharCode(10)) + ' } exports.Page = Page;';
+const compiled = ts.transpileModule(classSource, {fileName:'IndexMethods.ts', compilerOptions:{target:ts.ScriptTarget.ES2020, module:ts.ModuleKind.CommonJS}, reportDiagnostics:true});
+assert.deepEqual((compiled.diagnostics||[]).filter(d=>d.category===ts.DiagnosticCategory.Error).map(d=>ts.flattenDiagnosticMessageText(d.messageText,' ')), []);
+function deferred() { let resolve, reject; const promise = new Promise((a,b)=>{resolve=a; reject=b;}); return {promise,resolve,reject}; }
+async function drain() { for(let i=0;i<12;i++) await Promise.resolve(); }
+function harness(options={}) {
+  const records={construct:0,runs:0,stops:0,commits:[],saved:0,lines:[],events:[],setup:[],reset:0,hooks:[],phases:[]};
+  const client={ensureReady:()=>options.negotiate?.promise??Promise.resolve(''),promptBudgetBytes:()=>32768,cancelActive(){records.setup.push('cancel');},reset(){records.reset++;},bind(){},setLinkListener(fn){this.link=fn;}};
+  const channel={initialize(){},resume(){},isConnected:()=>true,inferenceReady:()=>true,disconnect(){records.setup.push('disconnect');},prepare:()=>Promise.resolve(),computeDevices:()=>Promise.resolve()};
+  class Runner {constructor(){records.construct++;} requestStop(){records.stops++;} async run(task,listener){records.runs++; records.listener=listener; if(options.runner) await options.runner.promise; listener({kind:'FINAL',text:task+' answer',status:options.finalStatus}); if(options.duplicateFinal) listener({kind:'FINAL',text:'duplicate'});}}
+  const sandbox={exports:{},MAX_STEPS:10,INFERENCE_STOPPED:'已停止生成',BubbleKind:{ERROR:1,LOOP:2},AgentEventKind:{ACTION:'ACTION',OBSERVATION:'OBSERVATION',SKILL:'SKILL',THOUGHT:'THOUGHT',FINAL:'FINAL',ERROR:'ERROR'},PARTIAL_FINAL_STATUS:'partial',PARTIAL_HISTORY_NOTE:'（上一轮未得到完整回答）',LIVE_PLACEHOLDER:'正在生成…',LIVE_TOOL_PREFIX:'正在调用工具：',LIVE_COMPOSING:'正在整理工具结果…',inferenceClient:client,nearbyChannel:channel,ReActAgentRunner:Runner,RemoteComputeModel:class {constructor(hooks){records.hooks.push(hooks);}},saveConversation(){records.saved++;},createSkillSnapshot:()=>options.skill?.promise??Promise.resolve({}),createConfiguredLoopToolRegistry:()=>Promise.resolve({close:async()=>{}}),ensureBundledWorkspaceFiles:()=>Promise.resolve()};
+  vm.runInNewContext(compiled.outputText,sandbox);
+  const p=new sandbox.exports.Page();
+  Object.assign(p,{pageActive:true,remoteRunGeneration:0,stopRequested:false,sending:false,message:'',skillSnapshot:options.skill?null:{},toolRegistryIncludesSkills:true,toolRegistryPromise:options.tools?.promise??Promise.resolve({close:async()=>{}}),activeRunner:null,liveReplyId:-1,liveReplyPending:false,processId:-1,collabController:null,conversation:{turns:[],addUser(x){this.turns.push(['user',x]);},addAssistant(x){this.turns.push(['assistant',x]);}},getAbilityContext:()=>({}),setCollaborationKeepScreenOn(){},refreshLinkChrome(){},appendLine(...x){records.lines.push(x);},appendUserMessage(){},appendProcess(e){records.events.push(e);},finishInferenceMetricsTask(){},commitLiveAnswer(x){records.commits.push(x);},dropLivePlaceholder(){this.liveReplyId=-1;},beginLiveReply(){records.setup.push('placeholder');},showLiveReply(){records.setup.push('preview');},addEvent(e){records.events.push(e);},disposeSingleDeviceSession(){},restoreConversation(){},buildRemoteConversation(){return this.conversation;},setLivePhase(x){records.phases.push(x);},parallelObserver(){return {};},createParallelRunner(){return {requestStop(){records.parallelStops=(records.parallelStops||0)+1;},async tryRun(task,conversation,observer,listener){records.parallelTries=(records.parallelTries||0)+1;if(!options.parallel)return false;listener({kind:'FINAL',text:'merged '+task,status:options.parallel==='partial'?'partial':undefined});return true;}};}});
+  if(options.ready) p.ensureRemoteReady=()=>options.ready.promise;
+  return {p,client,channel,records};
+}
+const tests=[]; const test=(name,fn)=>tests.push([name,fn]);
+for(const stage of ['ready','negotiate','skill','tools']) test('stop during '+stage+' prevents runner dispatch',async()=>{
+ const d=deferred(), h=harness({[stage]:d}); const run=h.p.runRemoteAgent('task','task',''); await drain(); h.p.stopGeneration(); d.resolve(stage==='ready'?true:stage==='negotiate'?'':stage==='tools'?{close:async()=>{}}:{}); await run;
+ assert.equal(h.records.construct,0); assert.equal(h.records.saved,0); assert.equal(h.records.commits.length,0); assert.equal(h.p.sending,false);
+});
+test('stop during runner suppresses late observation and final',async()=>{
+ const d=deferred(),h=harness({runner:d}); const run=h.p.runRemoteAgent('task','task','');await drain();assert.equal(h.records.runs,1);h.p.stopGeneration();h.records.listener({kind:'OBSERVATION',text:'late'});d.resolve();await run;assert.equal(h.records.stops,1);assert.equal(h.records.commits.length,0);assert.equal(h.records.events.length,0);assert.equal(h.records.saved,0);
+});
+test('dispose invalidates runner events and history commit',async()=>{
+ const d=deferred(),h=harness({runner:d});const run=h.p.runRemoteAgent('task','task','');await drain();h.p.aboutToDisappear();d.resolve();await run;assert.equal(h.p.pageActive,false);assert.equal(h.records.stops,1);assert.equal(h.records.saved,0);assert.equal(h.records.commits.length,0);assert.equal(h.records.reset,1);
+});
+test('old preparation finalizer does not disturb the replacement run',async()=>{
+ const first=deferred(),next=deferred(),h=harness({runner:next});let n=0;h.p.ensureRemoteReady=()=>++n===1?first.promise:Promise.resolve(true);const old=h.p.runRemoteAgent('old','old','');await drain();h.p.stopGeneration();const fresh=h.p.runRemoteAgent('new','new','');await drain();first.resolve(true);await old;assert.equal(h.p.sending,true);assert.equal(h.records.hooks.length,1);next.resolve();await fresh;assert.deepEqual(h.records.commits,['new answer']);assert.equal(h.records.saved,1);
+});
+test('superseded run model hooks cannot drive the current placeholder',async()=>{
+ const d=deferred(),h=harness({runner:d});
+ const old=h.p.runRemoteAgent('old','old','');await drain();assert.equal(h.records.hooks.length,1);h.p.stopGeneration();
+ const fresh=h.p.runRemoteAgent('new','new','');await drain();assert.equal(h.records.hooks.length,2);
+ h.records.setup.length=0;h.records.hooks[0].onStart();h.records.hooks[0].onDelta('stale');assert.deepEqual(h.records.setup,[]);
+ h.records.hooks[1].onStart();h.records.hooks[1].onDelta('live');assert.deepEqual(h.records.setup,['placeholder','preview']);
+ d.resolve();await old;await fresh;assert.deepEqual(h.records.commits,['new answer']);
+});
+test('tool action updates the placeholder phase',async()=>{
+ const d=deferred(),h=harness({runner:d});const run=h.p.runRemoteAgent('task','task','');await drain();
+ h.records.listener({kind:'ACTION',text:'x',toolName:'weather'});h.records.listener({kind:'OBSERVATION',text:'y'});
+ assert.deepEqual(h.records.phases,['正在生成…','正在调用工具：weather…','正在整理工具结果…']);d.resolve();await run;
+});
+test('a handled parallel run skips the single-device runner and is persisted once',async()=>{
+ const h=harness({parallel:true});await h.p.runRemoteAgent('q','q','');assert.equal(h.records.parallelTries,1);assert.equal(h.records.runs,0);assert.deepEqual(h.records.commits,['merged q']);assert.deepEqual(h.p.conversation.turns,[['user','q'],['assistant','merged q']]);
+});
+test('a partial parallel answer is shown but stored only as a note',async()=>{
+ const h=harness({parallel:'partial'});await h.p.runRemoteAgent('q','q','');assert.deepEqual(h.records.commits,['merged q']);assert.deepEqual(h.p.conversation.turns,[['user','q'],['assistant','（上一轮未得到完整回答）']]);
+});
+test('a declined split falls through to the single-device runner',async()=>{
+ const h=harness();await h.p.runRemoteAgent('q','q','');assert.equal(h.records.parallelTries,1);assert.equal(h.records.runs,1);
+});
+test('stop and dispose also stop the parallel runner',async()=>{
+ const d=deferred(),h=harness({runner:d});const run=h.p.runRemoteAgent('q','q','');await drain();h.p.stopGeneration();assert.equal(h.records.parallelStops,1);d.resolve();await run;
+ const e=deferred(),g=harness({runner:e});const run2=g.p.runRemoteAgent('q','q','');await drain();g.p.aboutToDisappear();assert.equal(g.records.parallelStops,1);e.resolve();await run2;
+});
+test('partial final is shown but not persisted as an established answer',async()=>{
+ const h=harness({finalStatus:'partial'});await h.p.runRemoteAgent('q','q','');assert.deepEqual(h.records.commits,['q answer']);
+ assert.deepEqual(h.p.conversation.turns,[['user','q'],['assistant','（上一轮未得到完整回答）']]);
+});
+test('successful answer commits and persists once',async()=>{
+ const h=harness();await h.p.runRemoteAgent('ok','ok','');assert.deepEqual(h.records.commits,['ok answer']);assert.equal(h.records.saved,1);assert.equal(h.p.conversation.turns.length,2);assert.equal(h.p.sending,false);
+});
+test('readiness continuation cannot connect after disposal',async()=>{
+ const d=deferred(),h=harness();h.channel.isConnected=()=>false;h.channel.prepare=()=>d.promise;let discoveries=0;h.channel.computeDevices=async()=>{discoveries++;};const ready=h.p.ensureRemoteReady(0);h.p.aboutToDisappear();d.resolve();assert.equal(await ready,false);assert.equal(discoveries,0);
+});
+(async()=>{let pass=0;for(const [name,fn] of tests){try{await fn();pass++;console.log('PASS '+name);}catch(e){console.error('FAIL '+name,e);process.exitCode=1;}}console.log(pass+'/'+tests.length+' actual Index lifecycle method tests passed (ArkUI rendering not compiled).');})().catch(e=>{console.error(e);process.exitCode=1;});

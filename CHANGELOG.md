@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Added — Agent integration branch (2026-10-10)
+
+- Import Agent-MiniPC commit `ff76d8d1a90b6bb3cb1bb5431238bdc662b3c6ba` while preserving both repositories' Git histories. This is a migration branch, not a new stable release.
+- Keep the original `src/chat-end` and `src/model-end` implementations for comparison. Agent projects are `loop-chat`, `gate-a/compute-probe`, and the `loop-minipc` protocol reference.
+- Preserve Agent version records in [CHANGELOG.agent.md](CHANGELOG.agent.md). Existing MiniPC version records and tags retain their original meaning.
+- Operation log and validation: [Agent integration record](docs/agent-integration-2026-10-10.md).
+
 ## [v0.4-hub] - 2026-09-23
 
 聊天只连选出的算力设备1；停用1号后其余算力确认接管，聊天机能重连。算力卡片能看温度和 CPU。

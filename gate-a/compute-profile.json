@@ -1,0 +1,31 @@
+{
+  "issuer": "pki_internal",
+  "type": "debug",
+  "acls": {
+    "allowed-acls": []
+  },
+  "permissions": {
+    "restricted-permissions": []
+  },
+  "validity": {
+    "not-before": 1700000000,
+    "not-after": 2000000000
+  },
+  "debug-info": {
+    "device-ids": [
+      "E8C7AFD0DA4F31C2A2D4B1590EBA568B09ACC828F49A902FF258C5FF846794E1",
+      "65C30B1810B8CBF849D6B2C4FC017D4F2A19C4363B5DE53379032D3EE78B5F14"
+    ],
+    "device-id-type": "udid"
+  },
+  "bundle-info": {
+    "developer-id": "OpenHarmony",
+    "apl": "normal",
+    "development-certificate": "-----BEGIN CERTIFICATE-----\nMIICSDCCAc6gAwIBAgIEIKyzqDAKBggqhkjOPQQDAjBjMQswCQYDVQQGEwJDTjEU\nMBIGA1UECgwLT3Blbkhhcm1vbnkxGTAXBgNVBAsMEE9wZW5IYXJtb255IFRlYW0x\nIzAhBgNVBAMMGk9wZW5IYXJtb255IEFwcGxpY2F0aW9uIENBMB4XDTI2MDkxMDA5\nNDg1OVoXDTM2MDkwNzA5NDg1OVowaDELMAkGA1UEBhMCQ04xFDASBgNVBAoMC09w\nZW5IYXJtb255MRkwFwYDVQQLDBBPcGVuSGFybW9ueSBUZWFtMSgwJgYDVQQDDB9P\ncGVuSGFybW9ueSBBcHBsaWNhdGlvbiBSZWxlYXNlMFkwEwYHKoZIzj0CAQYIKoZI\nzj0DAQcDQgAE22DgkEKVuX3ZGBzeOb9F9wB2sddozwXRA6LBUSGdXl5sTmM0hicD\nH7B4VFPdBPJSNE12GZzZoDNbKL7m3kKgE6NrMGkwHQYDVR0OBBYEFPtxruhlcRBQ\nsJdwcZqLu9oNUVgaMAkGA1UdEwQCMAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQM\nMAoGCCsGAQUFBwMDMBgGDCsGAQQBj1sCgngBAwQIMAYCAQEKAQAwCgYIKoZIzj0E\nAwIDaAAwZQIxAKLIZBe8IkMfqSqXbkkS4dPzxwmPCasp1ctkfLynV9ymz+LutPem\nelYvBL0VeVZjbgIwLmP9OaF7Ig9nKRsWf5KGOsp73joDsQHdry6rJm92hp5NRRye\nHbtattPEL/aSzEm/\n-----END CERTIFICATE-----\n",
+    "bundle-name": "com.jiuwen.registrychatui",
+    "app-feature": "hos_normal_app"
+  },
+  "version-code": 2,
+  "version-name": "2.0.0",
+  "uuid": "ac8d7a8e-32fe-468d-b343-b87086d6ae7a"
+}

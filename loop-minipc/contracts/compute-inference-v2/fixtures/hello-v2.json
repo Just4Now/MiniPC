@@ -1,0 +1,8 @@
+{
+  "protocol": "nearby-chat-v1",
+  "type": "hello",
+  "peerRole": "chat",
+  "name": "Loop",
+  "deviceUid": "loop-install",
+  "inferenceVersions": [2]
+}
