@@ -1,7 +1,8 @@
 export { ChatMessage, ConversationContext, ConversationRole } from './src/main/ets/agent/ConversationContext';
 export { clearStoredConversation, loadConversation, saveConversation } from './src/main/ets/agent/ConversationStore';
 export { AgentEvent, AgentEventKind } from './src/main/ets/agent/AgentEvent';
-export { AgentTool } from './src/main/ets/agent/AgentTool';
+export { AgentTool, ToolResult, ToolResultStatus, ToolExecutionPolicy, ToolMetadata, ToolExecutionContext } from './src/main/ets/agent/AgentTool';
+export { ToolContract, ToolContractCatalog, ValueSchema, EvidenceField, ContractRequirement, ContractCall, ContractOutcome, validateSchema } from './src/main/ets/agent/ToolContract';
 export { A2uiObservationDigest, summarizeA2uiObservation } from './src/main/ets/agent/A2uiObservationDigest';
 export {
   ToolRegistry,
@@ -9,7 +10,16 @@ export {
   createConfiguredLoopToolRegistry,
   createLoopToolRegistry
 } from './src/main/ets/agent/ToolRegistry';
-export { ReActAgentRunner, AgentListener } from './src/main/ets/agent/ReActAgentRunner';
+export { ReActAgentRunner, AgentListener, AgentRunContext, PARTIAL_FINAL_STATUS } from './src/main/ets/agent/ReActAgentRunner';
+export { ParallelTaskRunner, ParallelDeps, ParallelObserver, SubtaskView, SubtaskPhase, SubtaskModelHooks, ClusterSize } from './src/main/ets/agent/parallel/ParallelTaskRunner';
+export { Subtask, shouldTrySplit, splitTask, parseSubtasks } from './src/main/ets/agent/parallel/SubtaskSplitter';
+export { SubtaskOutcome, concatOutcomes, mergeOutcomes } from './src/main/ets/agent/parallel/SubtaskMerger';
+export { SplitPrompt, splitReActPrompt } from './src/main/ets/agent/ReActCore';
+export { ReActTaskWorker, WorkerSession, WorkerSessionFactory } from './src/main/ets/agent/ReActTaskWorker';
+export { planTaskGraph } from './src/main/ets/agent/TaskPlanner';
+export { ModelTaskAggregator } from './src/main/ets/agent/ModelTaskAggregator';
+export { TaskGoal, TaskEvidence, GoalPlanCheck, TaskAnswerCheck, parseTaskGoals, checkTaskAnswer, missingGoalTools } from './src/main/ets/agent/TaskContract';
+export { TaskNode, TaskGraph, WorkerStatus, WorkerRequest, WorkerResult, TaskWorker, TaskAggregator, CoordinatorResult, TaskCoordinator, validateTaskGraph, graphNodeMayParallel } from './src/main/ets/agent/TaskCoordinator';
 export { LocalModel } from './src/main/ets/model/LocalModel';
 export {
   LlmProvider,

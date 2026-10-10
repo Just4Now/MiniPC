@@ -62,6 +62,7 @@ function setup(isServer) {
       return loadEts(__dirname + '/../cluster/DeviceLabels.ets');
     }
     if (name === '../ui/ChatBridge') return loadEts(__dirname + '/../ui/ChatBridge.ets');
+    if (name === '../ui/CollaborationScreen') return loadEts(__dirname + '/../ui/CollaborationScreen.ets');
     if (name === '../cluster/DeviceInfo') return {
       DEVICE_INFO_POLL_MS: 2000,
       applyDeviceInfo(target, message) {
@@ -150,7 +151,7 @@ function setup(isServer) {
     return el;
   };
   const elements = Object.fromEntries(['history', 'prompt', 'send', 'connect', 'composer', 'connection',
-    'stats', 'devices', 'pick', 'preview', 'previewImg', 'previewClear', 'title'].map(id => [id, makeElement()]));
+    'stats', 'devices', 'pick', 'preview', 'previewImg', 'previewClear', 'clearTasks', 'title'].map(id => [id, makeElement()]));
   const document = { handlers: {}, getElementById: id => elements[id], createElement: makeElement,
     addEventListener(type, fn) { this.handlers[type] = fn; } };
   let preparations = 0;

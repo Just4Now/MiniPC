@@ -208,6 +208,7 @@ export class LinkEnhanceChannel {
   private permissionPending: Promise<void> | null = null;
   private onMessage: ((message: WireMessage, epoch: number) => void) | null = null;
   private onInference: ((message: WireMessage, epoch: number) => void) | null = null;
+  private onInferenceLink: ((droppedEpoch: number) => void) | null = null;
   private onConnection: ((connected: boolean, epoch: number) => void) | null = null;
   private status: string = IS_SERVER ? '可本机对话 · 请启用近场连接' : '正在寻找算力设备…';
   private selfSlot: number = 0;
@@ -311,6 +312,17 @@ export class LinkEnhanceChannel {
 
   setInferenceHandler(handler: ((message: WireMessage, epoch: number) => void) | null): void {
     this.onInference = handler;
+  }
+
+  /** Called with the epoch of every peer that is removed, before connection listeners. */
+  setInferenceLinkHandler(handler: ((droppedEpoch: number) => void) | null): void {
+    this.onInferenceLink = handler;
+  }
+
+  /** Epoch of the peer an unaddressed send() would use, or -1. */
+  readyEpoch(): number {
+    const peer = this.peers.find((item: Peer) => item.ready);
+    return peer === undefined ? -1 : peer.epoch;
   }
 
   async prepare(): Promise<void> {
@@ -978,6 +990,7 @@ export class LinkEnhanceChannel {
     if (this.peers.length === 0) this.status = IS_SERVER ?
       (this.server !== null ? '可本机对话 · 等待聊天手机连接' : status) : status;
     else this.refreshStatus();
+    this.onInferenceLink?.(peer.epoch);
     this.onConnection?.(this.isConnected(), peer.epoch);
   }
 

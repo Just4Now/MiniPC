@@ -1,4 +1,6 @@
 import { AgentTool } from '../agent/AgentTool';
+import { ToolContract } from '../agent/ToolContract';
+import { discoveryContract } from '../agent/contracts/DiscoveryContract';
 import { ModelScopeClient } from './ModelScopeClient';
 
 interface ModelScopeToolInput {
@@ -9,6 +11,7 @@ interface ModelScopeToolInput {
 }
 
 export class ModelScopeTool implements AgentTool {
+  contract(): ToolContract { return discoveryContract(this.name(), 'qualifiedName'); }
   private client: ModelScopeClient;
 
   constructor(client: ModelScopeClient) {

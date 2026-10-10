@@ -167,6 +167,13 @@ export class ModelScopeDirectClient implements ModelScopeClient {
     }
     try {
       const servers = await this.fetchOperationalServers();
+      // qualifiedName is an opaque lookup key: execute resolves the original
+      // registration.mcpToolName, never parses this display identifier.
+      servers.sort((left: DirectServer, right: DirectServer): number => {
+        const a = JSON.stringify([left.serverId, left.endpoint]);
+        const b = JSON.stringify([right.serverId, right.endpoint]);
+        return a < b ? -1 : (a > b ? 1 : 0);
+      });
       this.serverCount = servers.length;
       const loadedTools: DirectTool[] = [];
       const errors: string[] = [];
@@ -178,9 +185,11 @@ export class ModelScopeDirectClient implements ModelScopeClient {
           if (!preflight.ok) {
             throw new Error(preflight.message.length > 0 ? preflight.message : `MCP HTTP ${preflight.httpStatus}`);
           }
+          preflight.tools.sort((left: DynamicMcpTool, right: DynamicMcpTool): number =>
+            left.name < right.name ? -1 : (left.name > right.name ? 1 : 0));
           for (let toolIndex = 0; toolIndex < preflight.tools.length; toolIndex++) {
             const tool = preflight.tools[toolIndex];
-            const qualifiedName = this.qualifiedToolName(serverIndex, server.serverId, tool.name);
+            const qualifiedName = this.qualifiedToolName(serverIndex, toolIndex, server.serverId, tool.name);
             loadedTools.push({
               qualifiedName: qualifiedName,
               serverId: server.serverId,
@@ -399,10 +408,11 @@ export class ModelScopeDirectClient implements ModelScopeClient {
     };
   }
 
-  private qualifiedToolName(serverIndex: number, serverId: string, toolName: string): string {
-    const serverPart = safeSegment(serverId).substring(0, 20);
-    const toolPart = safeSegment(toolName);
-    return `mcp__${serverIndex.toString()}_${serverPart}__${toolPart}`.substring(0, 96);
+  private qualifiedToolName(serverIndex: number, toolIndex: number, serverId: string, toolName: string): string {
+    // Both ordinals precede the truncation boundary. Unlike a short hash, they
+    // cannot collide within this sorted catalog, even for sanitized/long names.
+    const prefix = 'mcp__' + serverIndex.toString() + '_' + toolIndex.toString() + '__';
+    return prefix + (safeSegment(serverId) + '__' + safeSegment(toolName)).substring(0, 96 - prefix.length);
   }
 
   private findTool(qualifiedName: string): DirectTool | null {

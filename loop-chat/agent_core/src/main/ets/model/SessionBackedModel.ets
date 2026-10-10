@@ -1,5 +1,6 @@
 import { ConversationContext } from '../agent/ConversationContext';
 import { LocalModel } from './LocalModel';
+import { requireTextCompletion } from './TextCompletionResponse';
 import { skillLogInfo, skillLogInfoChunks, skillLogWarn } from '../skill/SkillLog';
 
 /**
@@ -56,13 +57,23 @@ export interface ResponseChunk {
   finish_reason: string | null;
 }
 
+interface ResponseChoiceEnvelope {
+  delta?: ResponseMessageEnvelope;
+  message?: ResponseMessageEnvelope;
+  finish_reason?: string | null;
+}
+
 interface ResponseChunkEnvelope {
+  error?: Object | string;
   content?: string;
   finish_reason?: string | null;
   message?: ResponseMessageEnvelope;
+  choices?: ResponseChoiceEnvelope[];
 }
 
 interface ResponseMessageEnvelope {
+  tool_calls?: Object;
+  function_call?: Object;
   role?: string;
   content?: string;
 }
@@ -207,17 +218,31 @@ export function buildLocalCollaborationInfo(settings: LocalLlmCollaborationSetti
 }
 
 export function parseSessionResponseChunk(response: string): ResponseChunk {
+  let json: ResponseChunkEnvelope;
   try {
-    const json = JSON.parse(response) as ResponseChunkEnvelope;
-    const nestedContent = json.message?.content;
-    return {
-      content: json.content ?? (typeof nestedContent === 'string' ? nestedContent : ''),
-      finish_reason: json.finish_reason ?? null
-    };
-  } catch (_e) {
-    // 非 JSON: 当作纯文本 content, 无 finish_reason
+    json = JSON.parse(response) as ResponseChunkEnvelope;
+  } catch (_error) {
+    if (/^\s*[\[{]/.test(response)) throw new Error('Malformed native response JSON.');
     return { content: response, finish_reason: null };
   }
+  if (json === null || typeof json !== 'object' || Array.isArray(json)) {
+    throw new Error('Invalid native response envelope.');
+  }
+  if (json.error !== undefined && json.error !== null) {
+    throw new Error('Native provider error: ' + JSON.stringify(json.error));
+  }
+  if (json.choices !== undefined && !Array.isArray(json.choices)) throw new Error('Invalid native choices.');
+  const choice = json.choices !== undefined && json.choices.length > 0 ? json.choices[0] : undefined;
+  const message = json.message ?? choice?.delta ?? choice?.message;
+  if (message?.tool_calls !== undefined || message?.function_call !== undefined) {
+    throw new Error('Unsupported native tool_calls/function_call; text ReAct required.');
+  }
+  const content = json.content ?? message?.content ?? '';
+  const reason = json.finish_reason ?? choice?.finish_reason ?? null;
+  if (typeof content !== 'string' || (reason !== null && typeof reason !== 'string')) {
+    throw new Error('Invalid native content or finish_reason.');
+  }
+  return { content: content, finish_reason: reason };
 }
 
 // A retry inside the same native/co-session cannot repair a broken data plane;
@@ -427,9 +452,14 @@ export class SessionBackedModel implements LocalModel {
             if (settled) {
               return;
             }
-            const chunk = this.parseResponseChunk(response);
-            if (chunk.finish_reason !== null && chunk.finish_reason !== undefined) {
-              finish(true);
+            try {
+              const chunk = this.parseResponseChunk(response);
+              if (chunk.finish_reason !== null) {
+                // A one-token health probe intentionally exhausts its budget.
+                finish(chunk.finish_reason === 'stop' || chunk.finish_reason === 'length');
+              }
+            } catch (_error) {
+              finish(false);
             }
           });
           if (result.error !== 0) {
@@ -618,23 +648,32 @@ export class SessionBackedModel implements LocalModel {
               skillLogWarn('SessionBackedModel: response listener failed: ' +
                 (error instanceof Error ? error.message : String(error)));
             }
-            const chunk = this.parseResponseChunk(response);
-            if (chunk.content.length > 0) {
-              buffer += chunk.content;
-              this.tokenStreamListener?.(chunk.content);
-            }
-            if (chunk.finish_reason !== null && chunk.finish_reason !== undefined) {
-              finish(() => {
-                const text = buffer.trim();
-                if (text.length === 0) {
-                  reject(new Error('No message content returned.'));
-                  return;
+            try {
+              const chunk = this.parseResponseChunk(response);
+              if (chunk.finish_reason !== null) requireTextCompletion(chunk.finish_reason);
+              if (chunk.content.length > 0) {
+                buffer += chunk.content;
+                try {
+                  this.tokenStreamListener?.(chunk.content);
+                } catch (_error) {
+                  // Observers must not leave a native request unsettled.
                 }
-                this.sessionContextInitialized = true;
-                this.lastPrompt = prompt;
-                this.lastResponse = text;
-                resolve(text);
-              });
+              }
+              if (chunk.finish_reason !== null) {
+                finish(() => {
+                  const text = buffer.trim();
+                  if (text.length === 0) {
+                    reject(new Error('No message content returned.'));
+                    return;
+                  }
+                  this.sessionContextInitialized = true;
+                  this.lastPrompt = prompt;
+                  this.lastResponse = text;
+                  resolve(text);
+                });
+              }
+            } catch (error) {
+              finish(() => reject(error instanceof Error ? error : new Error(String(error))));
             }
           }
         );

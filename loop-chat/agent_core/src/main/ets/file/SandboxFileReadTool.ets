@@ -1,3 +1,5 @@
+import { ToolContract } from '../agent/ToolContract';
+import { fileContract } from '../agent/contracts/FileContracts';
 import fs from '@ohos.file.fs';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
@@ -18,6 +20,8 @@ interface SandboxFileReadRequest {
 }
 
 export class SandboxFileReadTool implements AgentTool {
+  contract(): ToolContract { return fileContract(this.name(), 'read'); }
+
   private context: common.UIAbilityContext;
 
   constructor(context: common.UIAbilityContext) {

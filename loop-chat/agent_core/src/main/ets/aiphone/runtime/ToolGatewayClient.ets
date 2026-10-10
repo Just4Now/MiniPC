@@ -2085,7 +2085,7 @@ function emptyDepartTimeIntent(): DepartTimeIntent {
 }
 
 function parseDepartTimeIntent(source: string): DepartTimeIntent {
-  const matched = /(凌晨|早上|上午|中午|下午|傍晚|晚上|夜间)?\s*(\d{1,2}|[零一二三四五六七八九十两]{1,3})\s*(?:[:：]\s*(\d{2})|点(?:\s*([零一二三四五六七八九十\d]{1,2})\s*分)?)\s*(左右|大约|前后|附近|大概|上下|之后|以后|后|起)?/.exec(source);
+  const matched = /(凌晨|早上|上午|中午|下午|傍晚|晚上|夜间)?\s*(\d{1,2}|[零一二三四五六七八九十两]{1,3})\s*(?:[:：]\s*(\d{2})|点(?:\s*(半|[零一二三四五六七八九十\d]{1,2})\s*分?)?)\s*(左右|大约|前后|附近|大概|上下|之前|以前|前|之后|以后|后|起)?/.exec(source);
   if (matched === null) {
     return emptyDepartTimeIntent();
   }
@@ -2094,7 +2094,7 @@ function parseDepartTimeIntent(source: string): DepartTimeIntent {
   if (matched[3] !== undefined && matched[3].length > 0) {
     minute = Number(matched[3]);
   } else if (matched[4] !== undefined && matched[4].length > 0) {
-    minute = parseChineseNumberToken(matched[4]);
+    minute = matched[4] === '半' ? 30 : parseChineseNumberToken(matched[4]);
   }
   if (hour < 0 || minute < 0) {
     return emptyDepartTimeIntent();
@@ -2105,6 +2105,9 @@ function parseDepartTimeIntent(source: string): DepartTimeIntent {
     return emptyDepartTimeIntent();
   }
   const qualifier = matched[5] === undefined ? '' : matched[5];
+  if (qualifier === '前' || qualifier === '以前' || qualifier === '之前') {
+    return { mode: 'before', center: hhmm, start: '', end: hhmm };
+  }
   if (qualifier === '后' || qualifier === '以后' || qualifier === '之后' || qualifier === '起') {
     return { mode: 'after', center: hhmm, start: hhmm, end: '' };
   }
@@ -4546,6 +4549,13 @@ function filterTrainsByDepartAfter(trains: A2uiTrainData[], afterTime: string): 
     }
   });
   return result;
+}
+
+function filterTrainsByDepartBefore(trains: A2uiTrainData[], beforeTime: string): A2uiTrainData[] {
+  return trains.filter((item: A2uiTrainData): boolean => {
+    const hhmm = departClock(item);
+    return /^\d{2}:\d{2}$/.test(hhmm) && minutesOfClock(hhmm) < minutesOfClock(beforeTime);
+  });
 }
 
 function filterHighSpeed(source: string, trains: A2uiTrainData[]): A2uiTrainData[] {
@@ -8977,7 +8987,10 @@ async function callLocalTrainSearch(prompt: string, surfaceId: string): Promise<
   parsed = filterHighSpeed(source, parsed);
   const beforeTimeFilter = parsed.slice();
   let timeSummary = '';
-  if (timeIntent.mode === 'after') {
+  if (timeIntent.mode === 'before') {
+    parsed = filterTrainsByDepartBefore(parsed, timeIntent.end);
+    timeSummary = timeIntent.end + ' 前';
+  } else if (timeIntent.mode === 'after') {
     parsed = filterTrainsByDepartAfter(parsed, timeIntent.start);
     timeSummary = timeIntent.start + ' 后';
   } else if (timeIntent.mode === 'around') {
@@ -9007,7 +9020,7 @@ async function callLocalTrainSearch(prompt: string, surfaceId: string): Promise<
 
   const summaryText = timeSummary.length > 0
     ? '已从 12306 查询到 ' + date + ' ' + fromName + ' 到 ' + toName + ' ' + timeSummary + '的车次。'
-    : '已从 12306 查询到 ' + date + ' ' + fromName + ' 到 ' + toName + ' 的车次。';
+    : '已从 12306 查询到 ' + date + ' ' + fromName + ' 到 ' + toName + ' 的车次。未按钟点筛选，这是当天车次。';
   const body = timeSummary.length > 0
     ? '以下为 ' + timeSummary + '出发的全部 12306 实时查询结果。'
     : '以下为 12306 实时查询结果。';

@@ -27,6 +27,7 @@ static Result OH_QoS_GewuCreateSession(const char*) {
 static Result OH_QoS_GewuSubmitRequest(int, const char*, void (*cb)(void*, const char*), void* ctx) {
     ++submits;
     savedCallback = cb; savedContext = ctx;
+    if (mode == 4) return {0, 1, 2};
     cb(ctx, "synchronous response");
     if (mode == 0) CompleteJob(reinterpret_cast<uintptr_t>(ctx));
     return {mode == 2 ? 401 : 0, 1, 2};
@@ -75,10 +76,28 @@ int main() {
     mode = 0;
     assert(Begin("/does-not-exist", "{}", (root / "events.jsonl").string())); WaitDone();
     assert(start()); WaitDone();
+    mode = 3;
+    const int abortsBeforeSingle = aborts.load();
+    assert(Begin(root.string(), "{\"stream\":false}", (root / "events.jsonl").string())); WaitDone();
+    assert(aborts == abortsBeforeSingle); // the one stream:false callback is terminal
+    mode = 4;
+    const int abortsBeforeDeadline = aborts.load();
+    assert(Begin(root.string(), "{}", (root / "events.jsonl").string(), 1)); WaitDone();
+    assert(aborts == abortsBeforeDeadline + 1); // requester deadline shortens the wait
+    mode = 0;
+    probeWaitSeconds = 1;
+    mode = 4;
+    const int createsBefore = creates.load();
+    const int submitsBefore = submits.load();
+    const int abortsBefore = aborts.load();
+    const int destroysBefore = destroys.load();
+    assert(start()); WaitDone();
+    assert(creates == createsBefore + 1 && submits == submitsBefore + 1);
+    assert(aborts == abortsBefore + 1 && destroys == destroysBefore + 1);
     {
         std::lock_guard<std::mutex> lock(State().mutex);
         State().log.close();
     }
     std::filesystem::remove_all(root);
-    std::cout << "PASS repeated requests, concurrent jobs, pre-submit cancellation, synchronous callbacks, failures, late callbacks, retry\n";
+    std::cout << "PASS repeated requests, concurrent jobs, pre-submit cancellation, synchronous callbacks, failures, late callbacks, retry, single-shot completion, requester deadline\n";
 }

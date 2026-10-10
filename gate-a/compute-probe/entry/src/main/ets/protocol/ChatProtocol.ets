@@ -67,6 +67,17 @@ export interface WireMessage {
   retryable?: boolean;
   state?: string;
   profiles?: InferProfile[];
+  /** Cluster idle/total on infer.status; the compute hub also reports it in capabilities. */
+  cluster?: ClusterInfo;
+  /** Label of the device that actually runs an accepted request. */
+  device?: string;
+  /** Short caption of the request's purpose, e.g. a parallel sub-task. Display only. */
+  label?: string;
+}
+
+export interface ClusterInfo {
+  idle: number;
+  total: number;
 }
 
 export interface InferProfile {
@@ -84,6 +95,10 @@ export interface InferProfile {
   readinessReason: string;
   maxCtx: number;
   gateBPassed: boolean;
+  /** Host accepts `messages` (developer + user) instead of one flattened prompt. */
+  splitMessages?: boolean;
+  /** Present on the compute hub: how many modelled devices exist and how many are idle. */
+  cluster?: ClusterInfo;
 }
 
 const PROTOCOL = 'nearby-chat-v1';
@@ -187,7 +202,29 @@ function validInference(m: WireMessage): boolean {
   if (m.text !== undefined && (typeof m.text !== 'string' ||
     new util.TextEncoder().encodeInto(m.text).length > 1024)) return false;
   if (m.message !== undefined && (typeof m.message !== 'string' || m.message.length > 1024)) return false;
-  return true;
+  if (m.device !== undefined && (typeof m.device !== 'string' || m.device.length > 128)) return false;
+  if (m.label !== undefined && (typeof m.label !== 'string' || m.label.length > 64)) return false;
+  if (m.cluster !== undefined && !validCluster(m.cluster)) return false;
+  return m.messages === undefined || validInferenceMessages(m.messages);
+}
+
+export function validCluster(value: ClusterInfo): boolean {
+  return value !== null && typeof value === 'object' && Number.isInteger(value.idle) && Number.isInteger(value.total) &&
+    value.idle >= 0 && value.total >= 0 && value.total <= 64 && value.idle <= value.total;
+}
+
+/** loop-react-split-v1: optional developer turn, then exactly one non-empty user turn. */
+export function validInferenceMessages(messages: ChatMessage[]): boolean {
+  if (!Array.isArray(messages) || messages.length < 1 || messages.length > 2) return false;
+  let bytes = 0;
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (message === null || typeof message !== 'object' || typeof message.content !== 'string') return false;
+    const last = index === messages.length - 1;
+    if (last ? message.role !== 'user' : message.role !== 'developer') return false;
+    bytes += new util.TextEncoder().encodeInto(message.content).length;
+  }
+  return bytes <= 32768 && messages[messages.length - 1].content.trim().length > 0;
 }
 
 function validId(id: string): boolean {

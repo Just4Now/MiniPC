@@ -5,6 +5,7 @@ import { aiLogInfo } from '../aiphone/runtime/AiphoneLogger';
 import { buildSkillsSection, SkillSnapshot } from '../skill/SkillSnapshot';
 import { LocalModel } from './LocalModel';
 import { LlmProvider } from './LlmProvider';
+import { parseTextCompletion } from './TextCompletionResponse';
 
 const MODEL_CONNECT_TIMEOUT_MS = 20000;
 const MODEL_READ_TIMEOUT_MS = 40000;
@@ -15,26 +16,6 @@ interface ChatRequest {
   messages: ChatMessage[];
   temperature: number;
   stream: boolean;
-}
-
-interface ChatChoice {
-  message?: ChatMessage;
-}
-
-interface ChatResponse {
-  choices?: ChatChoice[];
-}
-
-interface ChatDelta {
-  content?: string;
-}
-
-interface ChatStreamChoice {
-  delta?: ChatDelta;
-}
-
-interface ChatStreamResponse {
-  choices?: ChatStreamChoice[];
 }
 
 export class OpenAiCompatibleModel implements LocalModel {
@@ -109,8 +90,17 @@ export class OpenAiCompatibleModel implements LocalModel {
         connectTimeout: MODEL_CONNECT_TIMEOUT_MS,
         readTimeout: MODEL_READ_TIMEOUT_MS
       });
-      streamEndResolve();
-      await streamEnd;
+      let endTimedOut = false;
+      const endTimer = setTimeout((): void => {
+        endTimedOut = true;
+        streamEndResolve();
+      }, MODEL_READ_TIMEOUT_MS);
+      try {
+        await streamEnd;
+      } finally {
+        clearTimeout(endTimer);
+      }
+      if (endTimedOut) throw new Error('Truncated LLM stream: missing dataEnd.');
       rawResponse += decoder.decodeToString(new Uint8Array(0), { stream: false });
 
       if (statusCode < 200 || statusCode >= 300) {
@@ -163,13 +153,9 @@ export class OpenAiCompatibleModel implements LocalModel {
       }
     ];
 
-    if (conversation !== undefined) {
-      const history = conversation.toChatMessages();
-      for (const turn of history) {
-        messages.push(turn);
-      }
-    }
-
+    // ReActAgentRunner already embeds the conversation in the flat prompt.
+    // Do not add it again as structured messages: duplicating history makes
+    // old tool results look like part of the current task.
     messages.push({
       role: 'user',
       content: prompt
@@ -217,49 +203,6 @@ export class OpenAiCompatibleModel implements LocalModel {
   }
 
   private parseContent(body: string): string {
-    const trimmed = body.trim();
-    if (trimmed.startsWith('{')) {
-      return this.parseJsonContent(trimmed);
-    }
-
-    let content = '';
-    const lines = body.replace(/\r\n/g, '\n').split('\n');
-    for (let index = 0; index < lines.length; index++) {
-      const line = lines[index].trim();
-      if (!line.startsWith('data:')) {
-        continue;
-      }
-      const payload = line.substring('data:'.length).trim();
-      if (payload.length === 0 || payload === '[DONE]') {
-        continue;
-      }
-      const event = JSON.parse(payload) as ChatStreamResponse;
-      const choices = event.choices;
-      if (choices === undefined || choices.length === 0 || choices[0].delta === undefined) {
-        continue;
-      }
-      const deltaContent = choices[0].delta?.content;
-      if (deltaContent !== undefined) {
-        content += deltaContent;
-      }
-    }
-    if (content.length === 0) {
-      throw new Error('No streaming message content returned.');
-    }
-    return content.trim();
-  }
-
-  private parseJsonContent(body: string): string {
-    const json = JSON.parse(body) as ChatResponse;
-    const choices = json.choices;
-    if (choices === undefined || choices.length === 0) {
-      throw new Error('No choices returned.');
-    }
-
-    const message = choices[0].message;
-    if (message === undefined || message.content === undefined) {
-      throw new Error('No message content returned.');
-    }
-    return message.content.trim();
+    return parseTextCompletion(body);
   }
 }

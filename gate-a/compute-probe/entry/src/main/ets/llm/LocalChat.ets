@@ -4,6 +4,8 @@ import { fileIo } from '@kit.CoreFileKit';
 export interface ChatMessage { role: string; content: string; }
 export interface ChatUpdate { kind: 'delta' | 'done'; text: string; error?: string; finishReason?: string; }
 interface ChatRequest { type: string; messages: ChatMessage[]; stream: boolean; max_tokens: number; }
+export interface ChatStartOptions { maxTokens?: number; waitSeconds?: number; }
+const MAX_TOKENS = 2048;
 interface NativeEvent { event: string; id?: string; payload: string; }
 interface NativeResponse { message?: ChatMessage; finish_reason?: string | null; }
 
@@ -44,16 +46,21 @@ export class LocalChat {
     return '';
   }
 
-  start(messages: ChatMessage[], callback: (update: ChatUpdate) => void, requestId: string = ''): string {
+  start(messages: ChatMessage[], callback: (update: ChatUpdate) => void, requestId: string = '',
+    options: ChatStartOptions = {}): string {
     if (this.closed) return '模型服务已关闭。';
     if (messages.length === 0) return '请输入问题。';
+    const maxTokens = Number.isInteger(options.maxTokens) && (options.maxTokens as number) > 0 ?
+      Math.min(MAX_TOKENS, options.maxTokens as number) : MAX_TOKENS;
+    const waitSeconds = Number.isInteger(options.waitSeconds) && (options.waitSeconds as number) > 0 ?
+      options.waitSeconds as number : 0;
     // Streaming callbacks replace a character split across chunks with U+FFFD.
     // One complete response keeps those bytes together and decodes the character.
-    const request: ChatRequest = { type: 'qwen2', messages: messages, stream: false, max_tokens: 256 };
+    const request: ChatRequest = { type: 'qwen2', messages: messages, stream: false, max_tokens: maxTokens };
     let nativeId = 0;
     try {
       nativeId = probe.start(this.filesDir + '/models/Qwen2.5-7B-Instruct-Q4_N_0', JSON.stringify(request),
-        this.filesDir + '/gewu-chat.jsonl');
+        this.filesDir + '/gewu-chat.jsonl', waitSeconds);
     } catch (_) { return '无法启动模型，请确认模型文件已部署。'; }
     if (nativeId <= 0) return '模型繁忙，请稍后再发。';
     this.jobs.push({
@@ -116,9 +123,17 @@ export class LocalChat {
         if (typeof response.finish_reason === 'string' && response.finish_reason.length > 0) {
           job.finishReason = response.finish_reason;
           probe.complete(job.nativeId);
+        } else if (job.answer.length > 0) {
+          // stream:false has exactly one response; native already treats it as terminal.
+          job.finishReason = 'stop';
         }
       }
-      if (event.event === 'end') this.finish(job);
+      if (event.event === 'end') {
+        if (event.payload === 'stalled' && job.answer.length === 0 && job.failure.length === 0) {
+          job.failure = '算力端没有在时限内返回，请再试一次。';
+        }
+        this.finish(job);
+      }
     }
   }
 

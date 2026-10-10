@@ -1,74 +1,189 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { nearbyChannel } from '../nearby/LinkEnhanceChannel';
-import { InferProfile, WireMessage } from '../protocol/ChatProtocol';
+import { ChatMessage, ClusterInfo, InferProfile, WireMessage } from '../protocol/ChatProtocol';
 import { sha256Hex, utf8Bytes } from './InferenceWire';
 import { repairUtf8FromSource } from './Utf8Repair';
 
 const NEGOTIATE_MS = 10000;
 const ACCEPTED_MS = 10000;
-const HARD_MS = 180000;
+// Budget granted to the compute host. It stops generating and reports
+// infer.error inside this window; DELIVERY_GRACE_MS covers that report's trip.
+const DEADLINE_MS = 170000;
+const DELIVERY_GRACE_MS = 15000;
+// A cancelled request still occupies the host until it acknowledges the stop.
+const STOP_ACK_MS = 8000;
+// A request refused before acceptance (no idle device) may be re-issued; this bounds the waiting.
+const RETRY_INTERVAL_MS = 1500;
+const BUSY_WAIT_MS = 120000;
 export const INFERENCE_STOPPED = '已停止生成';
+const LINK_LOST = '连接已中断，请连接后重新发送。';
+const BUSY_TEXT = '算力繁忙，请稍后重试';
+
+/** Per-request observers; nothing global survives into the next request. */
+export interface InferHooks {
+  onStart?: () => void;
+  onDelta?: (text: string) => void;
+  /** The device that actually runs the request (compute hub reports it on acceptance). */
+  onAccepted?: (device: string) => void;
+  /** Requests sharing an owner can be cancelled together without touching other owners. */
+  owner?: string;
+  /** Caption shown on the compute device's task card (≤64 chars). */
+  label?: string;
+}
+
+/** Developer/user split of one ReAct prompt (loop-react-split-v1). */
+export interface InferSplit {
+  system: string;
+  user: string;
+}
 
 class StreamState {
   requestId: string = '';
   prompt: string = '';
+  owner: string = '';
+  epoch: number = -1;
   next: number = 1;
   text: string = '';
   accepted: boolean = false;
+  /** Start of the current attempt; the post-acceptance deadline counts from here. */
   started: number = 0;
+  /** First dispatch, bounding how long a refused request may keep waiting for an idle device. */
+  firstStarted: number = 0;
+  hooks: InferHooks = {};
+  messages: ChatMessage[] | undefined = undefined;
+  outputTokens: number = 0;
   resolve: ((value: string) => void) | null = null;
   reject: ((error: Error) => void) | null = null;
+  timer: number = -1;
+  /** Refused before acceptance; a retry timer owns the request until it is re-sent. */
+  waiting: boolean = false;
+  retryTimer: number = -1;
+}
+
+class StopState {
+  epoch: number = -1;
   timer: number = -1;
 }
 
 class InferenceClient {
   private profile: InferProfile | null = null;
+  private profileEpoch: number = -1;
+  private cluster: ClusterInfo | null = null;
   private negotiateId: string = '';
+  private negotiateEpoch: number = -1;
   private negotiateTimer: number = -1;
   private negotiateWait: ((value: string) => void) | null = null;
   private negotiatePromise: Promise<string> | null = null;
   private serial: number = 1;
-  private pending: StreamState | null = null;
-  private preview: ((text: string) => void) | null = null;
-  private onStart: (() => void) | null = null;
+  // Request IDs must stay unique across app restarts: the host may still hold an old one.
+  private instance: string = Date.now().toString(36) + Math.floor(Math.random() * 1679616).toString(36);
+  /** Dispatched requests by their current wire id. */
+  private calls: Map<string, StreamState> = new Map();
+  /** Requests held back until the host acknowledged earlier stops. */
+  private queued: StreamState[] = [];
+  private stopping: Map<string, StopState> = new Map();
+  /** Refused before acceptance (no idle device); re-sent later under a new wire id. */
+  private waitingCalls: StreamState[] = [];
+  private linkListener: (() => void) | null = null;
+  private loadListener: (() => void) | null = null;
   private status: string = '正在检查模型能力';
   private broken: boolean = false;
 
-  setPreview(preview: ((text: string) => void) | null): void {
-    this.preview = preview;
+  /** Notified after the inference link state changed (for status chrome only). */
+  setLinkListener(listener: (() => void) | null): void {
+    this.linkListener = listener;
   }
 
-  setStart(start: (() => void) | null): void {
-    this.onStart = start;
+  /** Notified when the compute cluster reports a different idle/total count. */
+  setLoadListener(listener: (() => void) | null): void {
+    this.loadListener = listener;
   }
 
-  cancelActive(): void {
-    const pending = this.pending;
-    if (pending === null) {
-      return;
+  /** Idle/total modelled devices behind the compute hub; a single device when the host does not say. */
+  clusterLoad(): ClusterInfo {
+    if (this.cluster !== null) {
+      return { idle: this.cluster.idle, total: this.cluster.total };
     }
-    nearbyChannel.send({ type: 'infer.cancel', version: 2, requestId: pending.requestId });
-    this.failPending(INFERENCE_STOPPED);
+    const ready = this.isReady();
+    return { idle: ready && this.calls.size === 0 ? 1 : 0, total: ready ? 1 : 0 };
+  }
+
+  cancel(): void {
+    this.cancelActive();
+  }
+
+  /** Stops every request of this client. */
+  cancelActive(): void {
+    if (this.negotiatePromise !== null) {
+      this.finishNegotiate(INFERENCE_STOPPED);
+    }
+    this.cancelMatching((_state: StreamState): boolean => true);
+  }
+
+  /** Stops only the requests started by one owner (one sub-task's model). */
+  cancelOwner(owner: string): void {
+    this.cancelMatching((state: StreamState): boolean => state.owner === owner);
+  }
+
+  private cancelMatching(match: (state: StreamState) => boolean): void {
+    const held = this.queued.filter(match);
+    this.queued = this.queued.filter((state: StreamState): boolean => !match(state));
+    for (const state of held) {
+      state.reject?.(new Error(INFERENCE_STOPPED));
+    }
+    for (const state of Array.from(this.calls.values()).concat(this.waitingCalls).filter(match)) {
+      // A refused request holds nothing on the host, so only dispatched ones need a stop.
+      const hostHolds = !state.waiting;
+      // Settle locally first: a disconnected channel must not strand callers.
+      this.fail(state, INFERENCE_STOPPED);
+      if (hostHolds) {
+        this.requestHostStop(state);
+      }
+    }
   }
 
   bind(): void {
-    nearbyChannel.setInferenceHandler((message: WireMessage, _epoch: number): void => {
-      this.onMessage(message);
+    nearbyChannel.setInferenceHandler((message: WireMessage, epoch: number): void => {
+      this.onMessage(message, epoch);
+    });
+    nearbyChannel.setInferenceLinkHandler((droppedEpoch: number): void => {
+      this.onLinkDropped(droppedEpoch);
     });
   }
 
   reset(): void {
+    this.finishNegotiate(LINK_LOST);
     this.profile = null;
-    this.negotiateId = '';
+    this.profileEpoch = -1;
+    this.cluster = null;
     this.broken = false;
     this.status = '正在检查模型能力';
-    this.negotiatePromise = null;
-    this.clearNegotiate();
-    this.failPending('连接已中断，请连接后重新发送。');
+    for (const state of Array.from(this.calls.values()).concat(this.waitingCalls)) {
+      this.fail(state, LINK_LOST);
+    }
+    const held = this.queued;
+    this.queued = [];
+    for (const state of held) {
+      state.reject?.(new Error(LINK_LOST));
+    }
+    this.clearAllStopping();
   }
 
   isReady(): boolean {
     return this.profile !== null && this.profile.ready;
+  }
+
+  /** True while a cancelled request has not yet been released by the host. */
+  isStopping(): boolean {
+    return this.stopping.size > 0;
+  }
+
+  promptBudgetBytes(): number {
+    if (this.profile === null || !Number.isInteger(this.profile.maxPromptBytes) ||
+      this.profile.maxPromptBytes <= 0) {
+      throw new Error('算力端尚未提供有效的输入预算');
+    }
+    return Math.min(32768, this.profile.maxPromptBytes);
   }
 
   failed(): boolean {
@@ -94,6 +209,7 @@ class InferenceClient {
     }
     const requestId = this.nextId('cap');
     this.negotiateId = requestId;
+    this.negotiateEpoch = nearbyChannel.readyEpoch();
     this.status = '正在检查模型能力';
     this.broken = false;
     const result = new Promise<string>((resolve: (value: string) => void) => {
@@ -103,143 +219,398 @@ class InferenceClient {
     this.negotiateTimer = setTimeout(() => {
       this.finishNegotiate('算力端版本不支持');
     }, NEGOTIATE_MS);
-    nearbyChannel.send({ type: 'infer.capabilities.get', version: 2, requestId: requestId });
+    this.deliver({ type: 'infer.capabilities.get', version: 2, requestId: requestId }, this.negotiateEpoch,
+      (): void => {
+        if (this.negotiateId === requestId) {
+          this.finishNegotiate(LINK_LOST);
+        }
+      });
     return result;
   }
 
-  complete(prompt: string): Promise<string> {
+  /**
+   * Sends one completion. A request issued while an earlier one is still
+   * being stopped waits for the host's acknowledgement instead of being
+   * rejected as busy. Several requests may be in flight at once.
+   */
+  complete(prompt: string, hooks: InferHooks = {}, split: InferSplit | null = null): Promise<string> {
     if (!this.isReady() || this.profile === null) {
       return Promise.reject(new Error('算力端版本不支持'));
     }
     const profile = this.profile;
-    const outputTokens = Math.min(256, profile.maxOutputTokens);
+    // ReAct turns need room for a multi-line Action/Final. Respect the negotiated
+    // capacity, with a conservative upper bound against unbounded generation.
+    const outputTokens = Math.min(2048, profile.maxOutputTokens);
     hilog.info(0, 'NearbyChat', 'infer prompt chars=%{public}d ctx=%{public}d',
       prompt.length, profile.maxContextTokens);
-    if (utf8Bytes(prompt).length > profile.maxPromptBytes) {
-      return Promise.reject(new Error('本轮输入超过传输限制'));
+    const messages: ChatMessage[] | undefined = profile.splitMessages === true && split !== null ?
+      [{ role: 'developer', content: split.system }, { role: 'user', content: split.user }] : undefined;
+    const promptBytes = messages === undefined ? utf8Bytes(prompt).length :
+      utf8Bytes(messages[0].content).length + utf8Bytes(messages[1].content).length;
+    const promptBudget = this.promptBudgetBytes();
+    if (promptBytes > promptBudget) {
+      return Promise.reject(new Error('本轮必要输入超过传输限制（' + promptBytes.toString() +
+        '/' + promptBudget.toString() + ' bytes），未发送请求，请缩小任务或文件范围'));
     }
-    if (this.pending !== null) {
-      return Promise.reject(new Error('算力繁忙，请稍后重试'));
-    }
-    const requestId = this.nextId('req');
     const state = new StreamState();
-    state.requestId = requestId;
     state.prompt = prompt;
-    state.started = Date.now();
-    this.pending = state;
+    state.owner = hooks.owner !== undefined ? hooks.owner : '';
+    state.hooks = hooks;
+    state.messages = messages;
+    state.outputTokens = outputTokens;
     const result = new Promise<string>((resolve: (value: string) => void, reject: (error: Error) => void) => {
       state.resolve = resolve;
       state.reject = reject;
     });
-    state.timer = setTimeout(() => {
-      this.expire(requestId);
-    }, ACCEPTED_MS);
-    nearbyChannel.send({
-      type: 'infer.request', version: 2, requestId: requestId,
-      clientInstanceId: 'loopchat', agentRunId: this.nextId('run'),
-      modelId: profile.modelId, modelRevision: profile.modelRevision, promptFormat: profile.promptFormat,
-      prompt: prompt, maxOutputTokens: outputTokens, deadlineBudgetMs: HARD_MS
-    });
-    const start = this.onStart;
-    if (start !== null) {
-      start();
+    if (this.stopping.size > 0) {
+      this.queued.push(state);
+      return result;
     }
+    this.start(state);
     return result;
   }
 
-  private onMessage(message: WireMessage): void {
-    if (message.type === 'infer.capabilities' && message.requestId === this.negotiateId) {
+  /** First dispatch of a call: fires onStart once, then sends. */
+  private start(state: StreamState): void {
+    state.firstStarted = Date.now();
+    if (!this.send(state)) {
+      return;
+    }
+    const begin = state.hooks.onStart;
+    if (begin !== undefined) {
+      begin();
+    }
+  }
+
+  /** Sends (or re-sends) one attempt under a fresh wire id. Returns false when it failed immediately. */
+  private send(state: StreamState): boolean {
+    const profile = this.profile;
+    if (profile === null) {
+      this.fail(state, '算力端版本不支持');
+      return false;
+    }
+    if (state.requestId.length > 0) {
+      this.calls.delete(state.requestId);
+    }
+    const requestId = this.nextId('req');
+    state.requestId = requestId;
+    state.epoch = nearbyChannel.readyEpoch();
+    state.started = Date.now();
+    state.next = 1;
+    state.text = '';
+    state.accepted = false;
+    state.waiting = false;
+    this.calls.set(requestId, state);
+    clearTimeout(state.timer);
+    state.timer = setTimeout(() => {
+      this.expire(requestId);
+    }, ACCEPTED_MS);
+    const request: WireMessage = {
+      type: 'infer.request', version: 2, requestId: requestId,
+      clientInstanceId: 'loopchat', agentRunId: this.nextId('run'),
+      modelId: profile.modelId, modelRevision: profile.modelRevision, promptFormat: profile.promptFormat,
+      maxOutputTokens: state.outputTokens, deadlineBudgetMs: DEADLINE_MS
+    };
+    if (state.hooks.label !== undefined && state.hooks.label.length > 0) {
+      request.label = state.hooks.label.substring(0, 64);
+    }
+    if (state.messages !== undefined) {
+      request.messages = state.messages;
+    } else {
+      request.prompt = state.prompt;
+    }
+    return this.deliver(request, state.epoch, (): void => {
+      if (this.calls.get(requestId) === state) {
+        this.fail(state, LINK_LOST);
+      }
+    });
+  }
+
+  /** Returns false when the send failed synchronously (failure already handled). */
+  private deliver(message: WireMessage, epoch: number, onFailure: () => void): boolean {
+    let sent: Promise<boolean>;
+    try {
+      sent = epoch >= 0 ? nearbyChannel.send(message, epoch) : nearbyChannel.send(message);
+    } catch (_error) {
+      onFailure();
+      return false;
+    }
+    Promise.resolve(sent).then((value: boolean): void => {
+      if (value === false) {
+        hilog.warn(0, 'NearbyChat', 'infer send failed type=%{public}s', message.type);
+        onFailure();
+      }
+    }).catch((_error: Error): void => onFailure());
+    return true;
+  }
+
+  /** Asks the host to stop and holds new requests until it confirms. */
+  private requestHostStop(state: StreamState): void {
+    const requestId = state.requestId;
+    if (requestId.length === 0) {
+      return;
+    }
+    this.clearStopping(requestId);
+    const queued = this.deliver({ type: 'infer.cancel', version: 2, requestId: requestId }, state.epoch,
+      (): void => {
+        this.clearStopping(requestId);
+      });
+    if (!queued) {
+      return;
+    }
+    const stop = new StopState();
+    stop.epoch = state.epoch;
+    stop.timer = setTimeout(() => {
+      this.clearStopping(requestId);
+    }, STOP_ACK_MS);
+    this.stopping.set(requestId, stop);
+  }
+
+  private clearStopping(requestId: string): void {
+    const stop = this.stopping.get(requestId);
+    if (stop !== undefined) {
+      clearTimeout(stop.timer);
+      this.stopping.delete(requestId);
+    }
+    this.releaseQueued();
+  }
+
+  private clearAllStopping(): void {
+    for (const stop of Array.from(this.stopping.values())) {
+      clearTimeout(stop.timer);
+    }
+    this.stopping.clear();
+    this.releaseQueued();
+  }
+
+  private releaseQueued(): void {
+    if (this.stopping.size > 0 || this.queued.length === 0) {
+      return;
+    }
+    const held = this.queued;
+    this.queued = [];
+    for (const state of held) {
+      this.start(state);
+    }
+  }
+
+  private onLinkDropped(epoch: number): void {
+    for (const state of Array.from(this.calls.values())) {
+      if (state.epoch < 0 || state.epoch === epoch) {
+        this.fail(state, LINK_LOST);
+      }
+    }
+    if (this.negotiatePromise !== null && (this.negotiateEpoch < 0 || this.negotiateEpoch === epoch)) {
+      this.finishNegotiate(LINK_LOST);
+    }
+    for (const entry of Array.from(this.stopping.entries())) {
+      if (entry[1].epoch < 0 || entry[1].epoch === epoch) {
+        this.clearStopping(entry[0]);
+      }
+    }
+    if (this.profile !== null && (this.profileEpoch < 0 || this.profileEpoch === epoch)) {
+      // The next link may reach a different host build; negotiate again.
+      this.profile = null;
+      this.profileEpoch = -1;
+      this.cluster = null;
+      this.broken = false;
+      this.status = '正在检查模型能力';
+    }
+    const listener = this.linkListener;
+    if (listener !== null) {
+      listener();
+    }
+  }
+
+  private onMessage(message: WireMessage, epoch?: number): void {
+    if (message.type === 'infer.capabilities' && this.negotiateId.length > 0 &&
+      message.requestId === this.negotiateId) {
       const profiles = message.profiles;
-      const profile = profiles !== undefined && profiles.length > 0 ? profiles[0] : undefined;
-      if (profile === undefined || profile.promptFormat !== 'loop-react-split-v1') {
+      // Keep a structurally compatible but not-yet-ready profile so its
+      // readinessReason remains visible to callers instead of being flattened
+      // into the unrelated version-unsupported error.
+      const compatible = profiles === undefined ? [] : profiles.filter((candidate: InferProfile): boolean =>
+        candidate.promptFormat === 'loop-react-split-v1' &&
+        Number.isInteger(candidate.maxPromptBytes) && candidate.maxPromptBytes > 0 &&
+        Number.isInteger(candidate.maxOutputTokens) && candidate.maxOutputTokens > 0 &&
+        Number.isInteger(candidate.maxContextTokens) && candidate.maxContextTokens > 0);
+      const profile = compatible.find((candidate: InferProfile): boolean => candidate.ready === true) ?? compatible[0];
+      if (profile === undefined) {
         this.finishNegotiate('算力端版本不支持');
         return;
       }
       this.profile = profile;
+      this.profileEpoch = epoch !== undefined ? epoch : this.negotiateEpoch;
+      this.cluster = profile.cluster !== undefined ? profile.cluster : null;
       this.broken = !profile.ready;
-      this.status = profile.ready ? '已就绪' : profile.readinessReason;
-      this.finishNegotiate(profile.ready ? '' : profile.readinessReason);
+      const reason = typeof profile.readinessReason === 'string' && profile.readinessReason.length > 0 ?
+        profile.readinessReason : '算力端尚未就绪';
+      this.status = profile.ready ? '已就绪' : reason;
+      this.finishNegotiate(profile.ready ? '' : reason);
+      this.notifyLoad();
       return;
     }
-    const pending = this.pending;
-    if (pending === null || message.requestId !== pending.requestId) {
+    if (message.type === 'infer.status') {
+      if (message.cluster !== undefined && (epoch === undefined || this.profileEpoch < 0 || epoch === this.profileEpoch)) {
+        this.cluster = message.cluster;
+        this.notifyLoad();
+        this.retryWaiting();
+      }
+      return;
+    }
+    const requestId = message.requestId || '';
+    if (this.stopping.has(requestId) && (message.type === 'infer.error' || message.type === 'infer.done')) {
+      this.clearStopping(requestId);
+      return;
+    }
+    const call = this.calls.get(requestId);
+    if (call === undefined) {
+      return;
+    }
+    // A reconnect gets a new epoch; output addressed to the old link is stale.
+    if (epoch !== undefined && call.epoch >= 0 && epoch !== call.epoch) {
       return;
     }
     if (message.type === 'infer.accepted') {
-      pending.accepted = true;
-      this.arm(pending);
+      call.accepted = true;
+      this.arm(call);
+      const accepted = call.hooks.onAccepted;
+      if (accepted !== undefined && typeof message.device === 'string' && message.device.length > 0) {
+        accepted(message.device);
+      }
       return;
     }
     if (message.type === 'infer.delta' && typeof message.seq === 'number' && typeof message.text === 'string') {
-      if (message.seq !== pending.next) {
-        this.failPending('链路无法完整交付结果');
+      if (message.seq !== call.next) {
+        this.fail(call, '链路无法完整交付结果');
+        this.requestHostStop(call);
         return;
       }
-      pending.text += message.text;
-      pending.next += 1;
-      this.arm(pending);
-      const preview = this.preview;
-      const shown = repairUtf8FromSource(pending.text, pending.prompt);
-      if (preview !== null && shown.length > 0) {
+      call.text += message.text;
+      call.next += 1;
+      this.arm(call);
+      const preview = call.hooks.onDelta;
+      const shown = repairUtf8FromSource(call.text, call.prompt);
+      if (preview !== undefined && shown.length > 0) {
         preview(shown);
       }
       return;
     }
     if (message.type === 'infer.done') {
-      const bytes = utf8Bytes(pending.text);
+      const bytes = utf8Bytes(call.text);
       const hash = sha256Hex(bytes);
-      if (message.lastSeq !== pending.next - 1 || message.outputUtf8Bytes !== bytes.length ||
-        message.outputSha256 !== hash || pending.text.trim().length === 0) {
-        this.failPending('链路无法完整交付结果');
+      if (message.lastSeq !== call.next - 1 || message.outputUtf8Bytes !== bytes.length ||
+        message.outputSha256 !== hash || call.text.trim().length === 0) {
+        this.fail(call, '链路无法完整交付结果');
         return;
       }
-      if (message.finishReason !== 'stop') {
-        this.failPending('回复未完整生成，未执行本轮新工具操作');
+      if (message.finishReason !== undefined && message.finishReason !== 'stop' &&
+        message.finishReason !== 'end_turn' && message.finishReason !== 'eos' && message.finishReason !== 'completed') {
+        this.fail(call, '回复未完整生成，未执行本轮新工具操作');
         return;
       }
-      this.succeed(repairUtf8FromSource(pending.text, pending.prompt));
+      this.succeed(call, repairUtf8FromSource(call.text, call.prompt));
       return;
     }
     if (message.type === 'infer.error') {
-      this.failPending(message.message || '模型加载、提交或清理失败');
+      // Refused before acceptance because no device was idle: nothing ran, so waiting and
+      // re-issuing is safe. Anything after acceptance may have run tools and is never replayed.
+      const refused = !call.accepted && message.retryable === true &&
+        (message.code === 'BUSY' || message.code === 'WORKER_LOST');
+      if (refused && Date.now() - call.firstStarted < BUSY_WAIT_MS) {
+        this.wait(call);
+        return;
+      }
+      this.fail(call, refused ? BUSY_TEXT : (message.message || '模型加载、提交或清理失败'));
     }
   }
 
-  private succeed(text: string): void {
-    const pending = this.pending;
-    this.pending = null;
-    if (pending === null) {
+  private notifyLoad(): void {
+    const listener = this.loadListener;
+    if (listener !== null) {
+      listener();
+    }
+  }
+
+  /** Parks a refused request; it is re-sent on the next idle report or after RETRY_INTERVAL_MS. */
+  private wait(state: StreamState): void {
+    clearTimeout(state.timer);
+    state.waiting = true;
+    this.calls.delete(state.requestId);
+    clearTimeout(state.retryTimer);
+    state.retryTimer = setTimeout(() => {
+      this.resend(state);
+    }, RETRY_INTERVAL_MS);
+    this.waitingCalls.push(state);
+  }
+
+  private retryWaiting(): void {
+    if (this.cluster === null || this.cluster.idle < 1) {
       return;
     }
-    clearTimeout(pending.timer);
+    // Only as many as there are idle devices; the rest keep waiting for the next report.
+    for (const state of this.waitingCalls.slice(0, this.cluster.idle)) {
+      this.resend(state);
+    }
+  }
+
+  private resend(state: StreamState): void {
+    const index = this.waitingCalls.indexOf(state);
+    if (index < 0 || !state.waiting) {
+      return;
+    }
+    this.waitingCalls.splice(index, 1);
+    clearTimeout(state.retryTimer);
+    if (Date.now() - state.firstStarted >= BUSY_WAIT_MS) {
+      state.waiting = false;
+      state.reject?.(new Error(BUSY_TEXT));
+      return;
+    }
+    this.send(state);
+  }
+
+  private succeed(state: StreamState, text: string): void {
+    if (this.calls.get(state.requestId) !== state) {
+      return;
+    }
+    this.calls.delete(state.requestId);
+    clearTimeout(state.timer);
     hilog.info(0, 'NearbyChat', 'infer complete bytes=%{public}d', utf8Bytes(text).length);
-    pending.resolve?.(text);
+    state.resolve?.(text);
   }
 
-  private failPending(text: string): void {
-    const pending = this.pending;
-    this.pending = null;
-    if (pending === null) {
+  private fail(state: StreamState, text: string): void {
+    const waiting = this.waitingCalls.indexOf(state);
+    if (waiting >= 0) {
+      this.waitingCalls.splice(waiting, 1);
+    }
+    const live = this.calls.get(state.requestId) === state;
+    if (!live && !state.waiting) {
       return;
     }
-    clearTimeout(pending.timer);
-    pending.reject?.(new Error(text));
+    this.calls.delete(state.requestId);
+    state.waiting = false;
+    clearTimeout(state.timer);
+    clearTimeout(state.retryTimer);
+    state.reject?.(new Error(text));
   }
 
   private expire(requestId: string): void {
-    const pending = this.pending;
-    if (pending === null || pending.requestId !== requestId) {
+    const call = this.calls.get(requestId);
+    if (call === undefined) {
       return;
     }
-    nearbyChannel.send({ type: 'infer.cancel', version: 2, requestId: requestId });
-    this.failPending('本轮推理中断，部分工具操作可能已完成');
+    this.fail(call, call.accepted ? '本轮推理中断：算力端未在时限内返回结果，请重试' :
+      '本轮推理中断：算力端未确认本次请求，请重试');
+    this.requestHostStop(call);
   }
 
-  private arm(pending: StreamState): void {
-    clearTimeout(pending.timer);
-    const remaining = Math.max(1000, HARD_MS - (Date.now() - pending.started));
-    pending.timer = setTimeout(() => {
-      this.expire(pending.requestId);
+  private arm(state: StreamState): void {
+    clearTimeout(state.timer);
+    const remaining = Math.max(1000, DEADLINE_MS + DELIVERY_GRACE_MS - (Date.now() - state.started));
+    const requestId = state.requestId;
+    state.timer = setTimeout(() => {
+      this.expire(requestId);
     }, remaining);
   }
 
@@ -249,6 +620,7 @@ class InferenceClient {
     this.negotiateWait = null;
     this.negotiatePromise = null;
     this.negotiateId = '';
+    this.negotiateEpoch = -1;
     if (text.length > 0) {
       this.broken = true;
       this.status = text;
@@ -266,7 +638,7 @@ class InferenceClient {
   }
 
   private nextId(prefix: string): string {
-    const id = prefix + String(this.serial);
+    const id = prefix + '-' + this.instance + '-' + String(this.serial);
     this.serial += 1;
     return id;
   }

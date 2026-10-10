@@ -1,5 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import util from '@ohos.util';
+import url from '@ohos.url';
 
 const MODELSCOPE_CONFIG_RAWFILE: string = 'modelscope_config.json';
 
@@ -28,7 +29,7 @@ export class ModelScopeConfig {
   }
 
   isConfigured(): boolean {
-    return this.modelscopeToken.length > 0;
+    return this.modelscopeToken.length > 0 && ModelScopeConfig.isValidBaseUrl(this.modelscopeApiBaseUrl);
   }
 
   isDirectMode(): boolean {
@@ -40,7 +41,23 @@ export class ModelScopeConfig {
     if (this.modelscopeToken.length === 0) {
       missing.push('modelscopeToken');
     }
+    if (!ModelScopeConfig.isValidBaseUrl(this.modelscopeApiBaseUrl)) {
+      missing.push('modelscopeApiBaseUrl');
+    }
     return missing.join(', ');
+  }
+
+  private static isValidBaseUrl(value: string): boolean {
+    const trimmed = value.trim();
+    if (!/^https?:\/\/[^/?#]+/i.test(trimmed) || /[\s\\]/.test(trimmed)) return false;
+    try {
+      const parsed = new url.URL(trimmed);
+      return (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+        parsed.hostname.length > 0 && parsed.username.length === 0 &&
+        parsed.password.length === 0 && trimmed.indexOf('?') < 0 && trimmed.indexOf('#') < 0;
+    } catch (_error) {
+      return false;
+    }
   }
 
   static async fromContext(context: common.UIAbilityContext): Promise<ModelScopeConfig> {

@@ -37,6 +37,7 @@ export interface LoopBackendCallbacks {
 }
 
 export interface LoopToolTrace {
+  callId?: string;
   toolId: string;
   input: string;
   observation: string;

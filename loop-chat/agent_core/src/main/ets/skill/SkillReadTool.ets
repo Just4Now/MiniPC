@@ -1,3 +1,5 @@
+import { ToolContract } from '../agent/ToolContract';
+import { fileContract } from '../agent/contracts/FileContracts';
 import { AgentTool } from '../agent/AgentTool';
 import { AgentSkill } from './AgentSkill';
 import { skillLogInfo, skillLogWarn } from './SkillLog';
@@ -5,6 +7,8 @@ import { SkillSnapshot } from './SkillSnapshot';
 
 /** Loads full SKILL.md instructions on demand (progressive disclosure). */
 export class SkillReadTool implements AgentTool {
+  contract(): ToolContract { return fileContract(this.name(), 'skill'); }
+
   private snapshot: SkillSnapshot;
 
   constructor(snapshot: SkillSnapshot) {

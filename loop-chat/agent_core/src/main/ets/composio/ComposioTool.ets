@@ -1,4 +1,6 @@
 import { AgentTool } from '../agent/AgentTool';
+import { ToolContract } from '../agent/ToolContract';
+import { discoveryContract } from '../agent/contracts/DiscoveryContract';
 import { ComposioSessionClient } from './ComposioSessionClient';
 
 interface ComposioToolInput {
@@ -9,6 +11,7 @@ interface ComposioToolInput {
 }
 
 export class ComposioTool implements AgentTool {
+  contract(): ToolContract { return discoveryContract(this.name(), 'toolSlug'); }
   private client: ComposioSessionClient;
 
   constructor(client: ComposioSessionClient) {

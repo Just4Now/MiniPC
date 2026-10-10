@@ -212,7 +212,11 @@ export function summarizeA2uiObservation(observation: string): A2uiObservationDi
   return {
     isA2ui: true,
     text: lines.join('\n'),
-    shouldStop: true,
+    // A successful A2UI result is still a tool Observation, not a terminal
+    // answer. The agent must be allowed to execute the remaining user tasks
+    // and produce one final response. Stop only for an error/blocked/auth
+    // result that requires user action or confirmation.
+    shouldStop: failureKeyFor(toolId, surface, connect, results).length > 0,
     failureKey: failureKeyFor(toolId, surface, connect, results),
     finalText: finalText
   };

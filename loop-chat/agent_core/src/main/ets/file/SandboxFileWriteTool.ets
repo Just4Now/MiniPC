@@ -1,3 +1,5 @@
+import { ToolContract } from '../agent/ToolContract';
+import { fileContract } from '../agent/contracts/FileContracts';
 import fs from '@ohos.file.fs';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
@@ -18,6 +20,8 @@ interface SandboxFileWriteRequest {
 }
 
 export class SandboxFileWriteTool implements AgentTool {
+  contract(): ToolContract { return fileContract(this.name(), 'write'); }
+
   private context: common.UIAbilityContext;
 
   constructor(context: common.UIAbilityContext) {

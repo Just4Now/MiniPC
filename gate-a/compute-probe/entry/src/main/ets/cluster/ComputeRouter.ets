@@ -25,6 +25,12 @@ export class DispatchEntry {
   forwardId: string = '';
   workerEpoch: number = 0;
   workerName: string = '';
+  /** True for an agent infer.* hand-off; false for the legacy chat request flow. */
+  infer: boolean = false;
+  /** The worker answered infer.accepted: the request is no longer safe to re-issue. */
+  accepted: boolean = false;
+  /** Streamed text so far, for the task card. */
+  answer: string = '';
 }
 
 export function nodeLoad(node: ScheduleNode): number {
@@ -158,6 +164,15 @@ export class ComputeRouter {
   getByForwardId(forwardId: string): DispatchEntry | undefined {
     const key = this.byForward.get(forwardId);
     return key === undefined ? undefined : this.byOrigin.get(key);
+  }
+
+  /** Dispatches issued on behalf of one origin session. */
+  dispatchesFromOrigin(originEpoch: number): DispatchEntry[] {
+    const found: DispatchEntry[] = [];
+    this.byOrigin.forEach((entry) => {
+      if (entry.originEpoch === originEpoch) found.push(entry);
+    });
+    return found;
   }
 
   /** Dispatches for one worker epoch, optionally narrowed to a wire request id. */

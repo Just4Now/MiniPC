@@ -1,3 +1,5 @@
+import { ToolContract } from './ToolContract';
+import { trainContract } from './contracts/TrainContract';
 import { AgentTool } from './AgentTool';
 import { runAiphoneTool } from '../aiphone/AiphoneToolExecutor';
 
@@ -41,6 +43,8 @@ interface QueryRequest {
 }
 
 export class TrainSearchTool implements AgentTool {
+  contract(): ToolContract { return trainContract(); }
+
   name(): string {
     return 'train_search';
   }
@@ -60,8 +64,7 @@ export class TrainSearchTool implements AgentTool {
       const raw = await runAiphoneTool('train.search', query, 'loop-train', 'search');
       return formatTrainResult(raw);
     } catch (error) {
-      const message = error instanceof Error ? error.message : `${error}`;
-      return `12306 查询失败：${message}`;
+      return `12306 查询失败：${errorText(error)}`;
     }
   }
 }
@@ -163,4 +166,31 @@ function formatRow(row: TrainRow): string {
 
 function textOf(value: string | undefined): string {
   return value === undefined ? '' : value.trim();
+}
+
+interface ErrorFields {
+  code?: number;
+  message?: string;
+}
+
+function errorText(error: Object): string {
+  if (error === null || error === undefined) {
+    return '未知错误';
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  const fields = error as ErrorFields;
+  const message = fields.message === undefined ? '' : fields.message;
+  const code = fields.code === undefined ? '' : fields.code.toString();
+  if (code.length > 0 && message.length > 0) {
+    return code + ' ' + message;
+  }
+  if (message.length > 0) {
+    return message;
+  }
+  if (code.length > 0) {
+    return code;
+  }
+  return '未知错误';
 }

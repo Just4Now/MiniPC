@@ -8,6 +8,7 @@ import {
   buildLocalCollaborationInfo,
   buildLocalSessionAttributes,
   clearStoredConversation,
+  ClusterSize,
   ConversationContext,
   ConversationRole,
   createConfiguredLoopToolRegistry,
@@ -17,11 +18,18 @@ import {
   ensureSandboxWorkspace,
   loadConversation,
   LlmProvider,
+  LocalModel,
   LoopModelInfo,
+  PARTIAL_FINAL_STATUS,
+  ParallelDeps,
+  ParallelObserver,
+  ParallelTaskRunner,
   ReActAgentRunner,
   saveConversation,
   sandboxWorkspacePath,
   SkillSnapshot,
+  SubtaskModelHooks,
+  SubtaskView,
   ToolRegistry,
   SessionBackedModel
 } from '@loop/agent-core';
@@ -36,6 +44,13 @@ import {
 } from '../llm/CollaborationController';
 
 const MAX_STEPS = 10;
+const LIVE_PLACEHOLDER = '正在生成…';
+const LIVE_TOOL_PREFIX = '正在调用工具：';
+const LIVE_COMPOSING = '正在整理工具结果…';
+// Remote prompts carry recent turns only; the full transcript stays in the UI/store.
+const REMOTE_HISTORY_TURNS = 6;
+const REMOTE_HISTORY_MAX_CHARS = 4000;
+const PARTIAL_HISTORY_NOTE = '（上一轮未得到完整回答）';
 const LOG_DOMAIN = 0x0000;
 const LOG_TAG = 'LoopyInference';
 // Gewu's cross-device prefill path can hit its receive timeout when a short
@@ -259,7 +274,12 @@ struct Index {
   private liveReplyPending: boolean = false;
   private processId: number = -1;
   private activeRunner: ReActAgentRunner | null = null;
+  private activeParallel: ParallelTaskRunner | null = null;
+  private parallelHeader: string = '';
+  private parallelViews: SubtaskView[] = [];
   private stopRequested: boolean = false;
+  private remoteRunGeneration: number = 0;
+  private pageActive: boolean = false;
   private chatBubbleTextWidthVp: number = 280;
   private collaborationKeepsScreenOn: boolean = false;
 
@@ -268,18 +288,33 @@ struct Index {
   }
 
   aboutToAppear(): void {
+    this.pageActive = true;
+    this.stopRequested = false;
     const context = this.getAbilityContext();
     this.restoreConversation();
     this.toolRegistryPromise = createConfiguredLoopToolRegistry(context);
     ensureBundledWorkspaceFiles(context).catch((_error: Error): void => {});
     nearbyChannel.initialize(context);
     inferenceClient.bind();
+    inferenceClient.setLinkListener((): void => {
+      if (this.pageActive) { this.refreshLinkChrome(); }
+    });
     this.modelStatus = '远程算力';
     this.refreshLinkChrome();
-    this.ensureRemoteReady().catch((_error: Error): void => {});
+    this.ensureRemoteReady(this.remoteRunGeneration).catch((_error: Error): void => {});
   }
 
   aboutToDisappear(): void {
+    this.pageActive = false;
+    this.remoteRunGeneration++;
+    this.stopRequested = true;
+    this.activeRunner?.requestStop();
+    this.activeRunner = null;
+    this.activeParallel?.requestStop();
+    this.activeParallel = null;
+    inferenceClient.setLinkListener(null);
+    this.dropLivePlaceholder();
+    this.sending = false;
     const tools = this.toolRegistryPromise;
     this.toolRegistryPromise = null;
     this.toolRegistryIncludesSkills = false;
@@ -995,7 +1030,7 @@ struct Index {
       return;
     }
     this.remoteStatus = '正在连接算力';
-    this.ensureRemoteReady().catch((_error: Error): void => {});
+    this.ensureRemoteReady(this.remoteRunGeneration).catch((_error: Error): void => {});
   }
 
   private statusColor(): string {
@@ -1018,7 +1053,8 @@ struct Index {
     return '#1EC98412';
   }
 
-  private async ensureRemoteReady(): Promise<boolean> {
+  private async ensureRemoteReady(generation: number = this.remoteRunGeneration): Promise<boolean> {
+    if (!this.isCurrentRemoteRun(generation)) { return false; }
     nearbyChannel.initialize(this.getAbilityContext());
     nearbyChannel.resume();
     if (nearbyChannel.isConnected()) {
@@ -1029,7 +1065,9 @@ struct Index {
     this.refreshLinkChrome();
     try {
       await nearbyChannel.prepare();
+      if (!this.isCurrentRemoteRun(generation)) { return false; }
       await nearbyChannel.computeDevices();
+      if (!this.isCurrentRemoteRun(generation)) { return false; }
       let ads = nearbyChannel.advertisedComputes();
       if (ads.length === 0) {
         this.remoteStatus = nearbyChannel.hasComputeHits()
@@ -1044,11 +1082,15 @@ struct Index {
       }
       const operation = nearbyChannel.operation();
       await nearbyChannel.connectAdvertiser(ads[0].mac, operation);
-      if (!await nearbyChannel.waitUntilConnected()) {
+      if (!this.isCurrentRemoteRun(generation)) { return false; }
+      const connected = await nearbyChannel.waitUntilConnected();
+      if (!this.isCurrentRemoteRun(generation)) { return false; }
+      if (!connected) {
         this.remoteStatus = nearbyChannel.getStatus();
         return false;
       }
       const serviceError = await nearbyChannel.checkService();
+      if (!this.isCurrentRemoteRun(generation)) { return false; }
       if (serviceError.length > 0) {
         this.remoteStatus = serviceError;
         return false;
@@ -1057,24 +1099,34 @@ struct Index {
       this.modelStatus = '远程算力';
       return true;
     } catch (error) {
-      this.remoteStatus = error instanceof Error ? error.message : '连接算力失败';
+      if (this.isCurrentRemoteRun(generation)) {
+        this.remoteStatus = error instanceof Error ? error.message : '连接算力失败';
+      }
       return false;
     } finally {
-      this.linkBusy = false;
-      if (nearbyChannel.inferenceReady()) {
-        await inferenceClient.ensureReady();
+      if (this.isCurrentRemoteRun(generation)) {
+        this.linkBusy = false;
+        this.refreshLinkChrome();
       }
-      this.refreshLinkChrome();
     }
   }
 
+  private isCurrentRemoteRun(generation: number): boolean {
+    return this.pageActive && generation === this.remoteRunGeneration && !this.stopRequested;
+  }
+
   private async runRemoteAgent(task: string, display: string, imagePath: string): Promise<void> {
+    if (!this.pageActive || this.sending) { return; }
+    const generation = ++this.remoteRunGeneration;
+    this.stopRequested = false;
     this.message = '';
     this.sending = true;
     this.setCollaborationKeepScreenOn(true);
     let finalAnswer: string | null = null;
+    let finalPartial = false;
     try {
-      const ready = await this.ensureRemoteReady();
+      const ready = await this.ensureRemoteReady(generation);
+      if (!this.isCurrentRemoteRun(generation)) { return; }
       if (!ready) {
         this.appendLine('Error', this.remoteStatus, BubbleKind.ERROR);
         return;
@@ -1084,6 +1136,7 @@ struct Index {
         return;
       }
       const negotiate = await inferenceClient.ensureReady();
+      if (!this.isCurrentRemoteRun(generation)) { return; }
       this.refreshLinkChrome();
       if (negotiate.length > 0) {
         this.appendLine('Error', negotiate, BubbleKind.ERROR);
@@ -1092,6 +1145,7 @@ struct Index {
       this.appendUserMessage(display, imagePath);
       const context = this.getAbilityContext();
       const skillSnapshot = this.skillSnapshot ?? await createSkillSnapshot(context);
+      if (!this.isCurrentRemoteRun(generation)) { return; }
       this.skillSnapshot = skillSnapshot;
       if (!this.toolRegistryIncludesSkills) {
         const oldTools = this.toolRegistryPromise;
@@ -1105,28 +1159,43 @@ struct Index {
         return;
       }
       const tools = await pendingTools;
+      if (!this.isCurrentRemoteRun(generation)) { return; }
+      // Hooks belong to this run's model only, so a superseded run can never
+      // drive the next run's placeholder.
+      const model = new RemoteComputeModel({
+        onStart: (): void => {
+          if (!this.isCurrentRemoteRun(generation)) { return; }
+          this.beginLiveReply();
+          this.setLivePhase(LIVE_PLACEHOLDER);
+        },
+        onDelta: (text: string): void => {
+          if (this.isCurrentRemoteRun(generation)) { this.showLiveReply(text); }
+        }
+      });
       const runner = new ReActAgentRunner(
-        new RemoteComputeModel(), tools, MAX_STEPS, skillSnapshot, false, false, true);
+        model, tools, MAX_STEPS, skillSnapshot, true, false, true,
+        (): number => inferenceClient.promptBudgetBytes(), false, true);
       this.activeRunner = runner;
       this.processId = -1;
       this.liveReplyId = -1;
       this.liveReplyPending = false;
-      inferenceClient.setStart((): void => {
-        this.beginLiveReply();
-      });
-      inferenceClient.setPreview((text: string): void => {
-        this.showLiveReply(text);
-      });
-      await runner.run(task, (event: AgentEvent): void => {
+      const listener = (event: AgentEvent): void => {
+        if (!this.isCurrentRemoteRun(generation)) { return; }
         if (event.kind === AgentEventKind.ACTION || event.kind === AgentEventKind.OBSERVATION ||
           event.kind === AgentEventKind.SKILL || event.kind === AgentEventKind.THOUGHT) {
           this.appendProcess(event);
+          if (event.kind === AgentEventKind.ACTION) {
+            this.setLivePhase(LIVE_TOOL_PREFIX + (event.toolName ?? '工具') + '…');
+          } else if (event.kind === AgentEventKind.OBSERVATION) {
+            this.setLivePhase(LIVE_COMPOSING);
+          }
           return;
         }
         if (event.kind === AgentEventKind.FINAL) {
           finalAnswer = event.text;
+          finalPartial = event.status === PARTIAL_FINAL_STATUS;
           this.finishInferenceMetricsTask();
-          this.showLiveReply(event.text);
+          this.commitLiveAnswer(event.text);
           return;
         }
         if (event.kind === AgentEventKind.ERROR && event.text === INFERENCE_STOPPED) {
@@ -1140,28 +1209,111 @@ struct Index {
           this.dropLivePlaceholder();
         }
         this.addEvent(event);
-      }, this.conversation);
-    } catch (error) {
-      this.dropLivePlaceholder();
-      const message = error instanceof Error ? error.message : '远程推理失败';
-      this.appendLine('Error', message, BubbleKind.ERROR);
-    } finally {
-      this.finishInferenceMetricsTask();
-      if (!this.stopRequested && finalAnswer !== null) {
-        this.conversation.addUser(display);
-        this.conversation.addAssistant(finalAnswer);
-        saveConversation(this.getAbilityContext(), this.conversation);
+      };
+      const conversation = this.buildRemoteConversation();
+      // Independent parts of a bundled request run on separate compute devices when
+      // several are idle; every other request keeps the single-device path below.
+      const parallel = this.createParallelRunner(generation, tools, skillSnapshot);
+      this.activeParallel = parallel;
+      const handled = await parallel.tryRun(task, conversation, this.parallelObserver(generation), listener);
+      if (!handled && this.isCurrentRemoteRun(generation)) {
+        this.parallelHeader = '';
+        this.parallelViews = [];
+        this.setLivePhase(LIVE_PLACEHOLDER);
+        await runner.run(task, listener, conversation);
       }
-      this.sending = false;
-      this.stopRequested = false;
-      this.activeRunner = null;
-      this.liveReplyId = -1;
-      this.liveReplyPending = false;
-      this.processId = -1;
-      inferenceClient.setPreview(null);
-      inferenceClient.setStart(null);
-      this.setCollaborationKeepScreenOn(false);
+    } catch (error) {
+      if (this.isCurrentRemoteRun(generation)) {
+        this.dropLivePlaceholder();
+        const message = error instanceof Error ? error.message : '远程推理失败';
+        this.appendLine('Error', message, BubbleKind.ERROR);
+      }
+    } finally {
+      // A disposed or superseded run must not clear the next run's listeners
+      // or persist a late answer. Stop invalidates the generation immediately.
+      if (this.pageActive && generation === this.remoteRunGeneration) {
+        this.finishInferenceMetricsTask();
+        if (!this.stopRequested && finalAnswer !== null) {
+          // A partial report keeps the question for follow-ups but is not a
+          // resolved answer that later turns may treat as established context.
+          this.conversation.addUser(display);
+          this.conversation.addAssistant(finalPartial ? PARTIAL_HISTORY_NOTE : finalAnswer);
+          saveConversation(this.getAbilityContext(), this.conversation);
+        } else {
+          this.dropLivePlaceholder();
+        }
+        this.sending = false;
+        this.stopRequested = false;
+        this.activeRunner = null;
+        this.activeParallel = null;
+        this.parallelHeader = '';
+        this.parallelViews = [];
+        this.liveReplyId = -1;
+        this.liveReplyPending = false;
+        this.processId = -1;
+        this.setCollaborationKeepScreenOn(false);
+      }
     }
+  }
+
+  private createParallelRunner(generation: number, tools: ToolRegistry, skillSnapshot: SkillSnapshot): ParallelTaskRunner {
+    // Owners are per run and per sub-task, so stopping one never cancels another's requests.
+    const owner = (name: string): string => 'p' + generation.toString() + ':' + name;
+    const deps: ParallelDeps = {
+      modelFor: (id: string, hooks: SubtaskModelHooks): LocalModel =>
+        new RemoteComputeModel({ owner: owner(id), onAccepted: hooks.onAccepted, label: hooks.label }),
+      splitModel: (): LocalModel => new RemoteComputeModel({ owner: owner('split'), label: '任务拆分' }),
+      mergeModel: (): LocalModel => new RemoteComputeModel({ owner: owner('merge'), label: '合并结果' }),
+      tools: tools,
+      skills: skillSnapshot,
+      maxSteps: MAX_STEPS,
+      maxPromptBytes: (): number => inferenceClient.promptBudgetBytes(),
+      load: (): ClusterSize => {
+        const info = inferenceClient.clusterLoad();
+        const size: ClusterSize = { idle: info.idle, total: info.total };
+        return size;
+      }
+    };
+    return new ParallelTaskRunner(deps);
+  }
+
+  /** Sub-task rows live in the placeholder bubble until the merged answer replaces it. */
+  private parallelObserver(generation: number): ParallelObserver {
+    const observer: ParallelObserver = {
+      onPhase: (text: string): void => {
+        if (!this.isCurrentRemoteRun(generation)) { return; }
+        this.beginLiveReply();
+        this.parallelHeader = text;
+        this.renderParallel();
+      },
+      onPlan: (views: SubtaskView[]): void => {
+        if (!this.isCurrentRemoteRun(generation)) { return; }
+        this.beginLiveReply();
+        this.parallelViews = views;
+        this.parallelHeader = '已拆分为 ' + views.length.toString() + ' 个独立任务，并行处理：';
+        this.renderParallel();
+      },
+      onProcess: (event: AgentEvent): void => {
+        if (!this.isCurrentRemoteRun(generation)) { return; }
+        this.appendProcess(event);
+      },
+      onUpdate: (view: SubtaskView): void => {
+        if (!this.isCurrentRemoteRun(generation)) { return; }
+        this.parallelViews = this.parallelViews.map((item: SubtaskView): SubtaskView => item.id === view.id ? view : item);
+        this.renderParallel();
+      }
+    };
+    return observer;
+  }
+
+  private renderParallel(): void {
+    let text = this.parallelHeader;
+    for (let index = 0; index < this.parallelViews.length; index++) {
+      const view = this.parallelViews[index];
+      text += '\n' + (index + 1).toString() + '. ' + view.title +
+        (view.device.length > 0 ? ' · ' + view.device : '') + ' · ' + view.detail;
+    }
+    this.setLivePhase(text);
   }
 
   private sendEnabled(): boolean {
@@ -1169,26 +1321,71 @@ struct Index {
   }
 
   private stopGeneration(): void {
+    if (!this.sending) { return; }
     this.stopRequested = true;
+    this.remoteRunGeneration++;
     this.activeRunner?.requestStop();
+    this.activeRunner = null;
+    this.activeParallel?.requestStop();
+    this.activeParallel = null;
     inferenceClient.cancelActive();
+    this.dropLivePlaceholder();
+    this.finishInferenceMetricsTask();
+    this.sending = false;
+    this.linkBusy = false;
+    this.processId = -1;
+    this.setCollaborationKeepScreenOn(false);
+    if (this.pageActive) { this.appendLine('Loop', INFERENCE_STOPPED, BubbleKind.LOOP); }
   }
 
   private beginLiveReply(): void {
     if (this.liveReplyId >= 0) {
       return;
     }
-    this.showLiveReply('正在生成…');
+    const bubble = this.createChatBubble('Loop', LIVE_PLACEHOLDER, BubbleKind.LOOP);
+    this.liveReplyId = bubble.id;
     this.liveReplyPending = true;
+    this.messages = [...this.messages, bubble];
+    this.scroller.scrollEdge(Edge.Bottom);
   }
 
-  private dropLivePlaceholder(): void {
-    if (!this.liveReplyPending || this.liveReplyId < 0) {
+  /** Placeholder text names what the run is waiting on; only FINAL replaces it with an answer. */
+  private setLivePhase(text: string): void {
+    if (this.liveReplyId < 0 || !this.liveReplyPending) {
       return;
     }
     const next: ChatBubble[] = [];
     for (const current of this.messages) {
-      if (current.id !== this.liveReplyId) {
+      if (current.id !== this.liveReplyId || current.text === text) {
+        next.push(current);
+        continue;
+      }
+      next.push({
+        id: current.id,
+        speaker: current.speaker,
+        text: text,
+        kind: current.kind,
+        imagePath: current.imagePath,
+        collapsible: false,
+        expanded: false,
+        revision: current.revision + 1
+      });
+    }
+    this.messages = next;
+  }
+
+  private dropLivePlaceholder(): void {
+    if (this.liveReplyId < 0) {
+      return;
+    }
+    const target = this.liveReplyId;
+    const next: ChatBubble[] = [];
+    for (const current of this.messages) {
+      if (current.id !== target) {
+        next.push(current);
+        continue;
+      }
+      if (current.text !== LIVE_PLACEHOLDER && !this.liveReplyPending) {
         next.push(current);
       }
     }
@@ -1197,8 +1394,8 @@ struct Index {
     this.liveReplyPending = false;
   }
 
-  private showLiveReply(text: string): void {
-    const visible = this.visibleAnswer(text);
+  private commitLiveAnswer(text: string): void {
+    const visible = text.trim();
     if (visible.length === 0) {
       return;
     }
@@ -1211,11 +1408,13 @@ struct Index {
       return;
     }
     const next: ChatBubble[] = [];
+    let found = false;
     for (const current of this.messages) {
       if (current.id !== this.liveReplyId) {
         next.push(current);
         continue;
       }
+      found = true;
       next.push({
         id: current.id,
         speaker: current.speaker,
@@ -1227,27 +1426,35 @@ struct Index {
         revision: current.revision + 1
       });
     }
+    if (!found) {
+      const bubble = this.createChatBubble('Loop', visible, BubbleKind.LOOP);
+      this.liveReplyId = bubble.id;
+      next.push(bubble);
+    }
     this.liveReplyPending = false;
     this.messages = next;
     this.scroller.scrollEdge(Edge.Bottom);
   }
 
-  private visibleAnswer(text: string): string {
-    const trimmed = text.trim();
-    if (trimmed.startsWith('Final:')) {
-      const body = trimmed.substring('Final:'.length).trim();
-      if (body.length > 0) {
-        return body;
-      }
-    }
-    return trimmed;
+  /**
+   * Model deltas are protocol text, not verified user-facing answers. Keep the
+   * placeholder visible until ReActAgentRunner emits a checked FINAL event.
+   */
+  private showLiveReply(_text: string): void {
+    // Intentionally do not render partial Execution/Action/Final text here.
+    // A Final-looking prefix may still be followed by another tool call or a
+    // validation retry, so only commitLiveAnswer() may update the answer bubble.
   }
 
   private appendProcess(event: AgentEvent): void {
     const label = event.kind === AgentEventKind.ACTION ? '行动' :
       (event.kind === AgentEventKind.OBSERVATION ? '观察' :
         (event.kind === AgentEventKind.SKILL ? '技能' : '思考'));
-    const line = `${label}：${event.text}`;
+    let body = event.text.trim();
+    if (body.startsWith('Observation:')) {
+      body = body.substring('Observation:'.length).trim();
+    }
+    const line = `${label}：${body}`;
     if (this.processId < 0) {
       const bubble = this.createProcessBubble(line);
       this.processId = bubble.id;
@@ -1365,6 +1572,28 @@ struct Index {
     this.clearAttachment();
     await this.runRemoteAgent(task, shown, imagePath);
   }
+  /** Most recent whole exchanges within a fixed budget, oldest dropped first. */
+  private buildRemoteConversation(): ConversationContext {
+    const turns = this.conversation.toChatMessages();
+    let start = Math.max(0, turns.length - REMOTE_HISTORY_TURNS);
+    while (start < turns.length && turns[start].role !== ConversationRole.USER) {
+      start++;
+    }
+    let characterCount = 0;
+    for (let index = start; index < turns.length; index++) {
+      characterCount += turns[index].content.length;
+    }
+    while (start < turns.length && characterCount > REMOTE_HISTORY_MAX_CHARS) {
+      characterCount -= turns[start].content.length;
+      start++;
+      while (start < turns.length && turns[start].role !== ConversationRole.USER) {
+        characterCount -= turns[start].content.length;
+        start++;
+      }
+    }
+    return ConversationContext.fromMessages(turns.slice(start));
+  }
+
   private buildCollaborationConversation(): ConversationContext {
     const turns = this.conversation.toChatMessages();
     const start = Math.max(0, turns.length - COLLABORATION_HISTORY_TURNS);
@@ -1921,7 +2150,7 @@ struct Index {
     let changed = false;
     const nextMessages: ChatBubble[] = [];
     for (const current of this.messages) {
-      const collapsible = this.shouldCollapseBubble(current.text);
+      const collapsible = current.kind === BubbleKind.PROCESS || this.shouldCollapseBubble(current.text);
       if (collapsible === current.collapsible) {
         nextMessages.push(current);
         continue;

@@ -1,3 +1,5 @@
+import { ToolContract } from '../agent/ToolContract';
+import { fileContract } from '../agent/contracts/FileContracts';
 import fs from '@ohos.file.fs';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
@@ -55,6 +57,8 @@ abstract class SandboxDirectoryToolBase {
 }
 
 export class SandboxListTool extends SandboxDirectoryToolBase implements AgentTool {
+  contract(): ToolContract { return fileContract(this.name(), 'list'); }
+
   name(): string {
     return 'list_sandbox_files';
   }

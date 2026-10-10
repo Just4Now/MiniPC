@@ -38,6 +38,7 @@
     .status.err { color:var(--err); background:rgba(196,71,58,.1); }
     .connect { margin-left:auto; flex-shrink:0; border:0; border-radius:16px; padding:8px 12px; background:#fff; color:var(--accent); font-size:13px; font-weight:650; cursor:pointer; }
     .connect:disabled { opacity:.45; cursor:default; }
+    .clear-tasks { margin-left:8px; border:0; border-radius:12px; padding:2px 10px; background:#fff; color:var(--accent); font-size:12px; font-weight:650; cursor:pointer; }
     .stats { display:flex; gap:8px; }
     .stat { flex:1; max-width:200px; padding:10px 12px; border-radius:16px; background:#fff; display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
     .stat span { font-size:12px; color:var(--muted); }
@@ -103,7 +104,7 @@
     <div class="stats" id="stats"></div>
     <div class="section devices-label">附近设备</div>
     <div class="list" id="devices"></div>
-    <div class="section tasks-label">任务</div>
+    <div class="section tasks-label">任务 <button id="clearTasks" class="clear-tasks" type="button">清空</button></div>
     <section id="history" class="list" aria-label="推理任务" aria-live="polite"></section>
     <div class="sheet">
       <div id="preview" class="preview">
@@ -139,6 +140,7 @@
     const ICO_STOP='<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>';
     connectButton.addEventListener('click',()=>window.chatBridge.connect());
     pickButton.addEventListener('click',()=>window.chatBridge.pickImage());
+    document.getElementById('clearTasks').addEventListener('click',()=>window.chatBridge.clear());
     let allowFocusPreparation=true;
     function prepareFromInput(){
       if(!allowFocusPreparation)return;

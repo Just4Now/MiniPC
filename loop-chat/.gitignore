@@ -18,6 +18,7 @@ entry/oh_modules/
 **/rawfile/llm_config.json
 **/rawfile/composio_config.json
 **/rawfile/modelscope_config.json
+**/rawfile/aiphone_provider_config.json
 
 # AGenUI HAR (fetch via scripts/fetch-agenui.sh)
 libs/*.har

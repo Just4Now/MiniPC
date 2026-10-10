@@ -10,9 +10,19 @@ export enum AgentEventKind {
 export class AgentEvent {
   kind: AgentEventKind;
   text: string;
+  callId?: string;
+  toolName?: string;
+  input?: string;
+  status?: string;
 
-  constructor(kind: AgentEventKind, text: string) {
+  // The trailing arguments remain optional so existing event producers stay source-compatible.
+  constructor(kind: AgentEventKind, text: string, callId?: string, toolName?: string, input?: string,
+    status?: string) {
     this.kind = kind;
     this.text = text;
+    this.callId = callId;
+    this.toolName = toolName;
+    this.input = input;
+    this.status = status;
   }
 }

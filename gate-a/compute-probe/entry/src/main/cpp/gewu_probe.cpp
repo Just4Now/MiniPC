@@ -4,6 +4,7 @@
 #include <hilog/log.h>
 #endif
 #include <cstdint>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -24,8 +25,16 @@ struct Job {
     bool cancelled = false;
     bool active = false;
     bool gotResponse = false;
+    // stream:false delivers exactly one callback carrying the whole answer, so
+    // that callback is terminal; waiting for a JS round trip only adds stalls.
+    bool singleShot = false;
+    int waitSeconds = 0;
     std::string utf8Pending;
 };
+
+#ifdef GEWU_PROBE_TEST
+int probeWaitSeconds = 45;
+#endif
 
 struct Probe {
     std::mutex mutex;
@@ -222,6 +231,10 @@ static void OnResponse(void* context, const char* response)
         job->gotResponse = true;
         EventLocked(state, id, "mem_first", ReadMem());
     }
+    if (job->singleShot) {
+        job->completed = true;
+        state.wake.notify_all();
+    }
 }
 
 static void FinishJob(Job& job, const std::string& reason)
@@ -235,9 +248,100 @@ static void FinishJob(Job& job, const std::string& reason)
     state.started = RunningCountLocked(state) > 0;
 }
 
-static void Run(std::string modelPath, std::string request, uintptr_t id, Job* owned)
+static int DefaultWaitSeconds()
+{
+#ifdef GEWU_PROBE_TEST
+    return probeWaitSeconds;
+#else
+    // stream:false delivers one callback when generation finishes. A long answer
+    // has no callback until then, so this must stay inside the chat hard budget
+    // and must not retry the same prompt.
+    return 150;
+#endif
+}
+
+// Callers derive the wait from the requester's deadline; never exceed the default.
+static int WaitSecondsFor(int requested)
+{
+    const int ceiling = DefaultWaitSeconds();
+    return requested > 0 && requested < ceiling ? requested : ceiling;
+}
+
+static bool WaitUntilDone(uintptr_t id, Job* owned, int seconds)
 {
     auto& state = State();
+    std::unique_lock<std::mutex> lock(state.mutex);
+    return state.wake.wait_for(lock, std::chrono::seconds(seconds), [owned, id] {
+        return owned->id != id || owned->completed || owned->cancelled;
+    });
+}
+
+// No completion callback before the wait ends means this generation did not
+// finish. Abort it once. Submitting the same prompt again does not finish it.
+enum class Attempt { Done, Stalled, CreateFailed, SubmitFailed };
+
+static Attempt SubmitOnce(const std::string& attributes, const std::string& request, uintptr_t id, Job* owned)
+{
+    auto& state = State();
+    auto created = OH_QoS_GewuCreateSession(attributes.c_str());
+    Event(id, "create", std::to_string(created.error));
+    Event(id, "mem_after_create", ReadMem());
+    if (created.error != OH_QOS_GEWU_OK) return Attempt::CreateFailed;
+    bool shouldSubmit = false;
+    int waitSeconds = DefaultWaitSeconds();
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        if (owned->id == id) waitSeconds = owned->waitSeconds;
+        if (owned->id == id && !owned->cancelled) {
+            owned->active = true;
+            owned->utf8Pending.clear();
+            shouldSubmit = true;
+        }
+    }
+    bool stalled = false;
+    if (shouldSubmit) {
+        Event(id, "request", request);
+        auto submitted = OH_QoS_GewuSubmitRequest(created.session, request.c_str(), OnResponse,
+            reinterpret_cast<void*>(id));
+        Event(id, "submit", std::to_string(submitted.error));
+        if (submitted.error != OH_QOS_GEWU_OK) {
+            {
+                std::lock_guard<std::mutex> lock(state.mutex);
+                if (owned->id == id) owned->active = false;
+            }
+            Event(id, "destroy", std::to_string(OH_QoS_GewuDestroySession(created.session)));
+            return Attempt::SubmitFailed;
+        }
+        bool signaled = WaitUntilDone(id, owned, waitSeconds);
+        bool grace = false;
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            grace = owned->id == id && owned->gotResponse && !owned->completed && !owned->cancelled;
+        }
+        if (grace) signaled = WaitUntilDone(id, owned, 5) || signaled;
+        bool abort = false;
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            const bool finished = owned->id != id || owned->completed;
+            stalled = !finished && !owned->cancelled && !signaled;
+            abort = !finished && (owned->cancelled || stalled);
+            if (abort) owned->active = false;
+        }
+        if (abort) {
+            const std::string result = std::to_string(OH_QoS_GewuAbortRequest(created.session, submitted.request));
+            Event(id, stalled ? "stall" : "abort", result);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        if (owned->id == id) owned->active = false;
+    }
+    Event(id, "destroy", std::to_string(OH_QoS_GewuDestroySession(created.session)));
+    return stalled ? Attempt::Stalled : Attempt::Done;
+}
+
+static void Run(std::string modelPath, std::string request, uintptr_t id, Job* owned)
+{
     for (const char* name : {"api_config.json", "tokenizer.json", "params"}) {
         std::string path = modelPath + "/" + name;
         struct stat details {};
@@ -251,49 +355,17 @@ static void Run(std::string modelPath, std::string request, uintptr_t id, Job* o
         Event(id, "file_readable", std::string(name) + " bytes=" + std::to_string(details.st_size));
     }
     Event(id, "mem_begin", ReadMem());
-    std::string attributes = "{\"model\":" + Quote(modelPath) +
+    const std::string attributes = "{\"model\":" + Quote(modelPath) +
         ",\"eval_settings\":{\"backend\":\"knpu\",\"max_ctx\":32768}}";
     Event(id, "attributes", attributes);
-    auto created = OH_QoS_GewuCreateSession(attributes.c_str());
-    Event(id, "create", std::to_string(created.error));
-    Event(id, "mem_after_create", ReadMem());
-    if (created.error != OH_QOS_GEWU_OK) {
-        FinishJob(*owned, "create_failed");
-        return;
-    }
-    bool shouldSubmit = false;
-    {
-        std::lock_guard<std::mutex> lock(state.mutex);
-        if (owned->id == id && !owned->cancelled) {
-            owned->active = true;
-            shouldSubmit = true;
-        }
-    }
-    if (shouldSubmit) {
-        Event(id, "request", request);
-        auto submitted = OH_QoS_GewuSubmitRequest(created.session, request.c_str(), OnResponse,
-            reinterpret_cast<void*>(id));
-        Event(id, "submit", std::to_string(submitted.error));
-        if (submitted.error == OH_QOS_GEWU_OK) {
-            std::unique_lock<std::mutex> lock(state.mutex);
-            state.wake.wait(lock, [owned, id] {
-                return owned->id != id || owned->completed || owned->cancelled;
-            });
-            bool abort = owned->id == id && owned->cancelled && !owned->completed;
-            owned->active = false;
-            lock.unlock();
-            if (abort) Event(id, "abort", std::to_string(OH_QoS_GewuAbortRequest(created.session, submitted.request)));
-        }
-    }
-    {
-        std::lock_guard<std::mutex> lock(state.mutex);
-        if (owned->id == id) owned->active = false;
-    }
-    Event(id, "destroy", std::to_string(OH_QoS_GewuDestroySession(created.session)));
-    FinishJob(*owned, "closed");
+    const Attempt attempt = SubmitOnce(attributes, request, id, owned);
+    if (attempt == Attempt::CreateFailed) FinishJob(*owned, "create_failed");
+    else if (attempt == Attempt::Stalled) FinishJob(*owned, "stalled");
+    else FinishJob(*owned, "closed");
 }
 
-static uintptr_t Begin(const std::string& modelPath, const std::string& request, const std::string& path)
+static uintptr_t Begin(const std::string& modelPath, const std::string& request, const std::string& path,
+    int waitSeconds = 0)
 {
     auto& state = State();
     std::lock_guard<std::mutex> lock(state.mutex);
@@ -307,6 +379,8 @@ static uintptr_t Begin(const std::string& modelPath, const std::string& request,
     Job* job = OccupyJobLocked(state);
     job->id = ++state.nextId;
     job->running = true;
+    job->singleShot = request.find("\"stream\":false") != std::string::npos;
+    job->waitSeconds = WaitSecondsFor(waitSeconds);
     state.started = true;
     const uintptr_t id = job->id;
     try {
@@ -378,16 +452,18 @@ static bool IntArg(napi_env env, napi_value arg, int32_t& result)
 
 static napi_value Start(napi_env env, napi_callback_info info)
 {
-    size_t argc = 3;
-    napi_value args[3];
+    size_t argc = 4;
+    napi_value args[4];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     std::string modelPath, request, path;
-    if (argc != 3 || !StringArg(env, args[0], modelPath) || !StringArg(env, args[1], request) ||
+    if ((argc != 3 && argc != 4) || !StringArg(env, args[0], modelPath) || !StringArg(env, args[1], request) ||
         !StringArg(env, args[2], path) || path.find('\0') != std::string::npos) {
         napi_throw_type_error(env, nullptr, "Expected model path, request and log path strings");
         return nullptr;
     }
-    const uintptr_t id = Begin(modelPath, request, path);
+    int32_t waitSeconds = 0;
+    if (argc == 4 && !IntArg(env, args[3], waitSeconds)) waitSeconds = 0;
+    const uintptr_t id = Begin(modelPath, request, path, waitSeconds);
     napi_value value;
     napi_create_int32(env, static_cast<int32_t>(id), &value);
     return value;

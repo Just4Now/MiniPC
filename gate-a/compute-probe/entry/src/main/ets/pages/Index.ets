@@ -5,8 +5,10 @@ import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { LocalChat, ChatUpdate } from '../llm/LocalChat';
 import { InferCardHooks, InferenceHost } from '../llm/InferenceHost';
+import { InferenceRelay, RelayEvents } from '../llm/InferenceRelay';
+import { PoolNode } from '../cluster/DevicePool';
 import { nearbyChannel } from '../nearby/LinkEnhanceChannel';
-import { WireMessage, ChatMessage, DeviceInfoEntry } from '../protocol/ChatProtocol';
+import { WireMessage, ChatMessage, ClusterInfo, DeviceInfoEntry } from '../protocol/ChatProtocol';
 import { IS_SERVER } from '../nearby/NearbyConfig';
 import { ComputeRouter, DispatchEntry, ScheduleNode, originKeyOf, pickRoute } from '../cluster/ComputeRouter';
 import { LocalLlmTransport } from '../llm/LlmTransport';
@@ -18,6 +20,7 @@ import {
 import { chatLabel, computeLabel, hidePhoneName, publicLabel, workerTail } from '../cluster/DeviceLabels';
 import { ChatBridge } from '../ui/ChatBridge';
 import { ActiveJob, DeviceView, JobView, PageEvent } from '../ui/DashboardTypes';
+import { collaborationScreen } from '../ui/CollaborationScreen';
 
 interface RosterDelivery {
   signature: string;
@@ -66,7 +69,7 @@ struct Index {
         this.autoConnect = true;
         this.ensureCollaborationReady(true);
       }
-    }, () => { this.pickImage(); });
+    }, () => { this.pickImage(); }, () => { this.clearFinishedJobs(); });
   private channel = nearbyChannel;
   private connecting: boolean = false;
   private preparation: Promise<void> | null = null;
@@ -77,6 +80,7 @@ struct Index {
   private connectManual: boolean = false;
   private model: LocalChat | null = null;
   private inference: InferenceHost | null = null;
+  private relay: InferenceRelay | null = null;
   private transport: LocalLlmTransport | null = null;
   private pageReady: boolean = false;
   private connectionError: string = '';
@@ -111,8 +115,8 @@ struct Index {
       this.filesDir = context.getApplicationContext().filesDir;
       this.model = new LocalChat(this.filesDir);
       const card = new InferCardHooks();
-      card.begin = (requestId: string, epoch: number, prompt: string): void => {
-        this.showInferTask(requestId, epoch, prompt);
+      card.begin = (requestId: string, epoch: number, prompt: string, label: string): void => {
+        this.showInferTask(requestId, epoch, prompt, label);
       };
       card.delta = (requestId: string, epoch: number, answer: string): void => {
         this.updateInferTask(requestId, epoch, answer);
@@ -123,12 +127,27 @@ struct Index {
       this.inference = new InferenceHost(this.model, (message: WireMessage, epoch: number): Promise<boolean> => {
         return this.channel.send(message, epoch);
       }, card);
+      const host = this.inference;
+      const events = new RelayEvents();
+      events.begin = (requestId: string, chatEpoch: number, workerEpoch: number, messages: ChatMessage[], label: string): void => {
+        this.showRelayTask(requestId, chatEpoch, workerEpoch, messages, label);
+      };
+      events.delta = (requestId: string, chatEpoch: number, answer: string): void => {
+        this.updateRelayTask(requestId, chatEpoch, answer);
+      };
+      events.end = (requestId: string, chatEpoch: number, answer: string, failed: boolean): void => {
+        this.completeJob(requestId, chatEpoch, answer.length > 0 ? answer : (failed ? '推理失败' : ''), failed);
+      };
+      this.relay = new InferenceRelay(this.router, (): PoolNode[] => this.poolNodes(), (): number[] => this.chatEpochs(),
+        host, (message: WireMessage, epoch: number): Promise<boolean> => this.channel.send(message, epoch), events);
+      host.setClusterProvider((): ClusterInfo | null => this.isComputeHub() ? this.relay?.load() ?? null : null);
       this.transport = new LocalLlmTransport(this.model);
     }
   }
 
   aboutToDisappear(): void {
     this.pageReady = false;
+    collaborationScreen.setWanted(false);
     this.stopInfoPoll();
     this.stopMeshRetry();
     this.model?.close();
@@ -308,6 +327,7 @@ struct Index {
 
   private emitDashboard(): void {
     this.channel.setActiveJobs(this.jobs.length);
+    collaborationScreen.setWanted(IS_SERVER && this.pageReady && (this.channel.isListening() || this.jobs.length > 0));
     if (!IS_SERVER || !this.pageReady) return;
     const runningNow = this.jobs.filter((job: ActiveJob) => job.workerEpoch === 0).length;
     // Same rule as the roster in pollDeviceInfo(): background telemetry yields to
@@ -436,7 +456,15 @@ struct Index {
     if (!IS_SERVER && !connected) this.serviceReady = false;
     if (IS_SERVER) {
       const dropped = !this.channel.hasEpoch(epoch);
+      // Inference jobs are keyed by wire requestId inside InferenceHost, not by the board key.
+      if (dropped) {
+        this.inference?.peerDropped(epoch);
+        // Relay first: it owns the infer.* hand-offs that cancelDroppedPeers must not treat as chat requests.
+        this.relay?.chatDropped(epoch);
+        this.relay?.workerDropped(epoch);
+      }
       this.cancelDroppedPeers();
+      this.relay?.publishLoad();
       if (dropped || connected) this.pollDeviceInfo();
       // A chat link can only be dialled by the chat phone: the peer carries no
       // discoverable address, and connectOtherComputes() only ever dials advertised
@@ -467,6 +495,7 @@ struct Index {
       this.peerStats.delete(epoch);
       const dropped = this.router.dropWorker(epoch);
       for (const entry of dropped) {
+        if (entry.infer) continue;
         this.channel.send({ type: 'error', requestId: entry.originRequestId,
           error: '执行设备 ' + entry.workerName + ' 连接断开' }, entry.originEpoch);
         this.completeJob(entry.originRequestId, entry.originEpoch, '执行设备连接断开', true);
@@ -674,15 +703,16 @@ struct Index {
   }
 
   /** Card text is the Loop user task; the model still receives the full prompt. */
-  private inferQuestion(prompt: string): string {
+  private inferQuestion(prompt: string, label: string = ''): string {
     const marker = 'User task:\n';
     const at = prompt.lastIndexOf(marker);
     const text = (at >= 0 ? prompt.substring(at + marker.length) : prompt).trim();
-    return text.length > 0 ? text : '（空任务）';
+    const body = text.length > 0 ? text : '（空任务）';
+    return label.length > 0 ? '【' + label + '】' + body : body;
   }
 
-  private showInferTask(requestId: string, epoch: number, prompt: string): void {
-    const question = this.inferQuestion(prompt);
+  private showInferTask(requestId: string, epoch: number, prompt: string, label: string): void {
+    const question = this.inferQuestion(prompt, label);
     if (this.webActiveId.length === 0) this.webActiveId = requestId;
     this.router.beginSelf();
     const job = this.createJob(requestId, [{ role: 'user', content: question }], true, epoch);
@@ -690,6 +720,7 @@ struct Index {
     hilog.info(0, 'NearbyChat', 'infer card request=%{public}s jobs=%{public}d', requestId, this.jobs.length);
     this.emit({ kind: 'remote-start', text: question, requestId: requestId });
     this.emitDashboard();
+    this.relay?.publishLoad();
   }
 
   private updateInferTask(requestId: string, epoch: number, answer: string): void {
@@ -708,6 +739,80 @@ struct Index {
     this.router.endSelf();
     const shown = answer.length > 0 ? answer : job.answer;
     this.completeJob(requestId, epoch, shown.length > 0 ? shown : (failed ? '推理失败' : ''), failed);
+    this.relay?.publishLoad();
+  }
+
+  /** Hub: a forwarded agent request gets the same task card as a local one, labelled with its device. */
+  private showRelayTask(requestId: string, chatEpoch: number, workerEpoch: number, messages: ChatMessage[], label: string): void {
+    const question = this.inferQuestion(messages[messages.length - 1].content, label);
+    if (this.webActiveId.length === 0) this.webActiveId = requestId;
+    const job = this.createJob(requestId, [{ role: 'user', content: question }], true, chatEpoch, workerEpoch);
+    this.jobs.push(job);
+    this.emit({ kind: 'remote-start', text: question, requestId: requestId });
+    this.emitDashboard();
+  }
+
+  private updateRelayTask(requestId: string, chatEpoch: number, answer: string): void {
+    const job = this.findJob(requestId, chatEpoch);
+    if (job === undefined) return;
+    job.answer = answer;
+    if (job.firstAt === 0 && answer.length > 0) job.firstAt = Date.now();
+    if (this.webActiveId === requestId) this.emit({ kind: 'text', text: answer, requestId: requestId });
+    this.emitDashboard();
+  }
+
+  /** The hub (or an unranked single device) routes agent requests; ranked workers only execute. */
+  private isComputeHub(): boolean {
+    return this.channel.selfComputeNumber() <= 1;
+  }
+
+  private chatEpochs(): number[] {
+    const epochs: number[] = [];
+    for (const peer of this.channel.peerInfos()) {
+      if (peer.ready && peer.role === 'chat') epochs.push(peer.epoch);
+    }
+    return epochs;
+  }
+
+  /** Idle snapshot for routing: in-flight counts include hand-offs the devices have not reported yet. */
+  private poolNodes(): PoolNode[] {
+    const nodes: PoolNode[] = [];
+    const self = this.selfEntry();
+    const own = new PoolNode();
+    own.epoch = 0;
+    own.label = this.selfComputeLabel();
+    own.isSelf = true;
+    own.ready = this.model !== null && !!self.model && self.model.length > 0;
+    own.inflight = Math.max(self.modelRequests === undefined ? 0 : self.modelRequests, this.inference?.isActive() ? 1 : 0);
+    own.memAvail = self.memAvail === undefined ? -1 : self.memAvail;
+    nodes.push(own);
+    const peers = this.channel.peerInfos();
+    for (const peer of peers) {
+      if (peer.role !== 'compute' || !peer.ready) continue;
+      const stats = this.peerStats.get(peer.epoch);
+      const node = new PoolNode();
+      node.epoch = peer.epoch;
+      node.label = computeLabel(peer.epoch, peers, this.selfComputeLabel());
+      node.ready = !!stats && !!stats.model && stats.model.length > 0;
+      node.inflight = this.router.workerLoad(peer.epoch, stats?.modelRequests === undefined ? 0 : stats.modelRequests);
+      node.memAvail = stats?.memAvail === undefined ? -1 : stats.memAvail;
+      nodes.push(node);
+    }
+    return nodes;
+  }
+
+  private receiveInference(message: WireMessage, epoch: number): void {
+    if (message.type === 'infer.accepted' || message.type === 'infer.delta' ||
+      message.type === 'infer.done' || message.type === 'infer.error') {
+      // Output from a compute device that this hub handed a request to.
+      this.relay?.handleFromWorker(message, epoch);
+      return;
+    }
+    if (this.isComputeHub() && this.relay !== null) {
+      this.relay.handleFromChat(message, epoch);
+      return;
+    }
+    this.inference?.handle(message, epoch);
   }
 
   private startLocal(id: string, messages: ChatMessage[], peer: boolean, epoch: number, image: string = '',
@@ -876,6 +981,7 @@ struct Index {
       this.peerStats.set(epoch, entry);
       if (entry.memAvail !== undefined) this.channel.setPeerMem(epoch, entry.memAvail);
       this.emitDashboard();
+      this.relay?.publishLoad();
       return;
     }
     if (message.requestId) this.replyDeviceInfo(message.requestId, epoch);
@@ -1076,7 +1182,7 @@ struct Index {
   private receive(message: WireMessage, epoch: number): void {
     if (IS_SERVER) {
       if (message.type.indexOf('infer.') === 0) {
-        this.inference?.handle(message, epoch);
+        this.receiveInference(message, epoch);
         return;
       }
       if (message.type === 'deviceInfo') {
@@ -1155,6 +1261,12 @@ struct Index {
     }
   }
 
+  /** Clears the finished-task list only; running tasks stay so their results still arrive. */
+  private clearFinishedJobs(): void {
+    this.finishedJobs = [];
+    this.emitDashboard();
+  }
+
   private finish(text: string, error: boolean): void {
     this.activeId = '';
     this.emit({ kind: 'done', text: text, error: error });
@@ -1178,7 +1290,7 @@ struct Index {
       Web({ src: $rawfile('peer-chat.html'), controller: this.controller })
         .javaScriptAccess(true)
         .domStorageAccess(false)
-        .javaScriptProxy({ object: this.bridge, name: 'chatBridge', methodList: ['send', 'stop', 'connect', 'prepare', 'pickImage'], controller: this.controller })
+        .javaScriptProxy({ object: this.bridge, name: 'chatBridge', methodList: ['send', 'stop', 'connect', 'prepare', 'pickImage', 'clear'], controller: this.controller })
         .onPageEnd(() => {
           this.pageReady = true;
           this.channel.subscribe(

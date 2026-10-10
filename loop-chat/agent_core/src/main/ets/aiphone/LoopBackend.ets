@@ -211,12 +211,13 @@ export class LoopBackend {
         callbacks.onA2uiJsonl?.(line);
       }
     };
-    const runner = new ReActAgentRunner(model, this.buildToolRegistry(request, a2uiCallbacks), request.maxSteps > 0 ? request.maxSteps : 10);
+    const runner = new ReActAgentRunner(model, this.buildToolRegistry(request, a2uiCallbacks), request.maxSteps > 0 ? request.maxSteps : 10,
+      undefined, false, false, false, (): number => 32768, false, true);
     const toolCalls: LoopToolTrace[] = [];
     let finalAnswer = '';
     let error = '';
     let raw = '';
-    let lastAction: LoopToolTrace = { toolId: '', input: '', observation: '' };
+    const pendingActions: LoopToolTrace[] = [];
 
     await runner.run(request.prompt, (event: AgentEvent): void => {
       raw += `${event.kind}: ${event.text}\n`;
@@ -248,12 +249,37 @@ export class LoopBackend {
         }
       } else if (event.kind === AgentEventKind.ERROR) {
         error = event.text;
+        // A tool/control error may carry the originating call ID. Preserve it
+        // in the public trace so parallel failures cannot be mistaken for a
+        // later observation or disappear from diagnostics.
+        if (event.callId !== undefined && event.callId.length > 0) {
+          const index = pendingActions.findIndex((trace: LoopToolTrace): boolean => trace.callId === event.callId);
+          const action = index >= 0 ? pendingActions.splice(index, 1)[0] : undefined;
+          toolCalls.push({
+            callId: event.callId,
+            toolId: event.toolName ?? action?.toolId ?? '',
+            input: event.input ?? action?.input ?? '',
+            observation: event.text
+          });
+        }
       } else if (event.kind === AgentEventKind.ACTION) {
-        lastAction = this.parseActionTrace(event.text);
+        const trace = this.parseActionTrace(event.text);
+        trace.callId = event.callId ?? trace.callId;
+        trace.toolId = event.toolName ?? trace.toolId;
+        trace.input = event.input ?? trace.input;
+        pendingActions.push(trace);
       } else if (event.kind === AgentEventKind.OBSERVATION) {
+        // Legacy runners emit observations in action order; structured runners
+        // may finish in any order. An unknown explicit ID must never consume
+        // another call's input (nor let a duplicate consume the next call).
+        const index = event.callId === undefined || event.callId.length === 0 ?
+          (pendingActions.length > 0 ? 0 : -1) :
+          pendingActions.findIndex((trace: LoopToolTrace): boolean => trace.callId === event.callId);
+        const action = index >= 0 ? pendingActions.splice(index, 1)[0] : undefined;
         toolCalls.push({
-          toolId: lastAction.toolId,
-          input: lastAction.input,
+          callId: event.callId ?? action?.callId,
+          toolId: event.toolName ?? action?.toolId ?? '',
+          input: event.input ?? action?.input ?? '',
           observation: event.text
         });
       }
@@ -395,7 +421,9 @@ export class LoopBackend {
     if (open <= 0 || close < open) {
       return { toolId: action, input: '', observation: '' };
     }
+    const suffix = /^\s*\[([^\]\r\n]+)\]\s*$/.exec(action.substring(close + 1));
     return {
+      callId: suffix === null ? undefined : suffix[1],
       toolId: action.substring(0, open).trim(),
       input: action.substring(open + 1, close).trim(),
       observation: ''
