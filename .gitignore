@@ -55,3 +55,6 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+# Integration validation artifacts
+.validation/

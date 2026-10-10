@@ -133,6 +133,11 @@ function build(tag) {
       },
       clearInterval: id => clockTimers.delete(id),
       require: name => {
+        // Gate-report output is mocked; the regression never writes device files.
+        if (name === '@kit.CoreFileKit') return { fileIo: {
+          OpenMode: { READ_WRITE: 1, CREATE: 2, TRUNC: 4 },
+          openSync: () => ({ fd: 1 }), writeSync: () => {}, closeSync: () => {}
+        } };
         if (name === '@kit.ArkTS') return { util: modules.util };
         if (name === '@kit.DistributedServiceKit') return {
           distributedDeviceManager: { createDeviceManager: () => manager, releaseDeviceManager: () => {} },

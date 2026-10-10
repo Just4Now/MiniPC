@@ -18,6 +18,8 @@ function setup() {
   const behavior = { devices: [{ deviceId: 'stable', networkId: 'current', deviceName: '模型手机' }],
     check: async () => '', connect: async () => { connected = true; }, wait: async () => connected };
   const channel = {
+    recordGateFailure: reason => { behavior.gateFailure = reason; },
+    runGateSuite: async () => { behavior.gateRuns = (behavior.gateRuns || 0) + 1; },
     isConnected: () => connected, isConnecting: () => false, isForeground: () => true, operation: () => operation,
     devices: async () => behavior.devices,
     computeDevices: async () => behavior.devices,

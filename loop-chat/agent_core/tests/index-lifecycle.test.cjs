@@ -8,7 +8,7 @@ for (const p of [process.env.TYPESCRIPT_PATH, 'typescript', 'D:/command-line-too
   try { ts = require(p); break; } catch {}
 }
 if (!ts) throw new Error('Set TYPESCRIPT_PATH to the local compiler module');
-const source = fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/pages/Index.ets'), 'utf8');
+const source = fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/pages/Index.ets'), 'utf8').replace(/\r\n?/g, '\n');
 const names = ['aboutToAppear','aboutToDisappear','ensureRemoteReady','isCurrentRemoteRun','runRemoteAgent','stopGeneration'];
 function method(name) {
   const startPattern = new RegExp('^  (?:private )?(?:async )?' + name + '\\(', 'm');
