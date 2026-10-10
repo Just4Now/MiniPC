@@ -2,6 +2,8 @@
 
 此迁移分支把 Agent-MiniPC 引入 MiniPC 主仓库，保留两边提交历史。`main` 仍保持原 MiniPC 版本；迁移尚未发布为稳定版。完整操作、验证和回退步骤见 [迁移记录](docs/agent-integration-2026-10-10.md)。
 
+当前迁移分支为 [`integrate-agent`](https://github.com/Keanu2/MiniPC/tree/integrate-agent)，审查入口为 [草稿 PR #2](https://github.com/Keanu2/MiniPC/pull/2)。按用户要求，后续分支命名不使用 `codex/` 前缀。改名未改变源码或提交历史，步骤见 [分支改名记录](docs/branch-rename-2026-10-10.md)。
+
 ## 开发入口
 
 | 目录 | 用途 | 状态 |

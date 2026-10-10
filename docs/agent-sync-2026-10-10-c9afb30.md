@@ -1,5 +1,7 @@
 # Agent 上游同步记录：c9afb30
 
+> 当前分支已改名为 `integrate-agent`，当前审查入口为 [草稿 PR #2](https://github.com/Keanu2/MiniPC/pull/2)。下文旧分支名和 PR #1 是实际操作的历史记录；后续继续工作请使用新分支。改名步骤见 [分支改名记录](branch-rename-2026-10-10.md)。
+
 日期：2026-10-10（Asia/Shanghai）。工作目录 `D:\MiniPC-integrate`，分支 `codex/integrate-agent`，现有草稿 PR [MiniPC #1](https://github.com/Keanu2/MiniPC/pull/1)。此次同步保持 MiniPC main 与基线 tag 不变。
 
 ## 来源与范围

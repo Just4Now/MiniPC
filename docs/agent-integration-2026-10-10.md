@@ -1,5 +1,7 @@
 # Agent-MiniPC 迁入 MiniPC：逐步操作记录
 
+> 当前分支已改名为 `integrate-agent`，当前审查入口为 [草稿 PR #2](https://github.com/Keanu2/MiniPC/pull/2)。下文旧分支名和 PR #1 是实际操作的历史记录；后续继续工作请使用新分支。改名步骤见 [分支改名记录](branch-rename-2026-10-10.md)。
+
 日期：2026-10-10（Asia/Shanghai）。独立工作目录：`D:\MiniPC-integrate`。此记录用于迁移分支，目标是保留版本基线与历史、建立可复现入口，暂不合入 `main`。
 
 ## 1. 核对仓库、分支和当前工作区
@@ -153,7 +155,7 @@ gh pr create --repo Keanu2/MiniPC --base main --head codex/integrate-agent --dra
 ```powershell
 git switch --detach minipc-before-agent-20261010
 # 查看完成后回到迁移分支
-git switch codex/integrate-agent
+git switch integrate-agent
 ```
 
 当前 `main` 未变，因此无需回滚主线；合并前完整代码与文档由 tag 保留。原两个工作目录的未跟踪文件没有复制进新仓库，也没有清理。
