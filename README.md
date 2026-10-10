@@ -1,45 +1,90 @@
 # MiniPC
 
-算力协同，由算力端和聊天端组成，靠蓝牙近场连接。具有两个独立 HAP。
+MiniPC 是面向 HarmonyOS NEXT 的近场算力协同项目。聊天端负责用户交互、Agent 工具调用和结果汇总；算力端运行本地模型并处理推理请求。设备之间通过 BLE 发现和 `linkEnhance` 通信。
 
-现在的版本是 [v0.4-hub](https://github.com/Keanu2/MiniPC/releases/tag/v0.4-hub)。改过什么看 [CHANGELOG.md](CHANGELOG.md)。
+## 功能
 
-## 怎么跑起来的
-
-算力机（`src/model-end`，`IS_SERVER = true`）先用 manufacturer `0x6E77`、type `1` 的 BLE 广播互相发现，按组网时可用内存选出算力设备1。启动后留 10 秒选举窗口，编号确定后才发布编号广播；广播只在编号真正变化且没有在途任务时更新。聊天机只连接可信的算力设备1，连上之后标题显示「聊天设备N」，状态栏写「协同已就绪」。算力设备1统一接收、调度并回传，其他算力设备只与它保持算力链路。
-
-算力设备1停用后，存活算力按旧排名确认接管：至少15秒、三次成功完成的扫描均未发现旧中心后，由当前可见存活成员中排名最靠前的一台接管为1号并发布新广播；聊天端在接管窗口内继续有限次重连，不会直接连仍编号为2的节点。已连上中心的执行节点不再自己猜编号，等中心按安装 UID 分配；第三台、第四台不会再都自称算力设备2。
-
-轻量内存、温度、CPU 和推理路数在空闲时每 2 秒更新。成员变化由中心立刻同步：推理进行中只发精简名单（身份、角色、编号、ready），空闲时发完整清单，没有变化则 30 秒保底。失败会按连接重试。细节、容量边界和尚未做完的真机轮次见 [2026-09-23 多算力审查](docs/multi-compute-membership-review-2026-09-23.md)。更早的中心接管和广播修复见 [2026-09-22 修复记录](docs/nearby-identity-and-hub-failover-fix-2026-09-22.md)，其中「推理期间不发后台控制消息」已被上面的精简名单替代。
-
-消息走 `linkEnhance`，协议叫 `nearby-chat-v1`，帧大概 480 字节 Base64，编解码在 `protocol/ChatProtocol.ets`。
-
-聊天机连上中心后所有新请求都发给算力设备1；仅在未连接中心且本机部署权重时保留离线本地推理。1号接到请求后按负载和可用内存选执行机。代码在 `cluster/ComputeRouter.ets` 的 `pickNode`。派出去的请求带 `sched=true`，对面必须自己跑并经1号回传结果。
-
-算力编号按组网时的可用内存排一次（余量最大的是算力设备1，平手按安装 UID），内存后来涨跌不再改号；中心失效后按存活成员重新编号。界面上只显示「算力设备N / 聊天设备N」，不出现手机蓝牙名。聊天机由当前中心按安装 UID 分配不重复编号，同一近场服务会话保留已分配号码供重连使用；更换中心后可能重新分配，不是物理设备永久编号。回复末尾的「由算力设备N推理」是协调机改写 `done.source` 写上去的。
-
-两端都能附图，但现在这颗 Qwen2.5-7B-Instruct 是文本模型，图只显示在气泡/任务卡里，既不进推理也不走近场。
-
-签名用本机 `tools/signing`，证书别提交。模型文件也不进 Git，放到应用 `filesDir/models/Qwen2.5-7B-Instruct-Q4_N_0`。
+- Agent 根据任务调用注册工具，支持文件读取、计算、单位换算、天气、车次和地点查询。
+- 独立子任务支持并发推理和结果汇总，算力中心负责请求路由。
+- 算力设备支持发现、编号、中心选举和接管，界面显示设备状态与任务记录。
+- 推理请求支持取消、超时和结果完整性校验；聊天端显示任务总耗时。
 
 ## 目录
 
-| | 干什么 | 开关 |
-|---|---|---|
-| `src/model-end` | 跑模型、选点、仪表盘 | `nearby/NearbyConfig.ets` 里 `IS_SERVER = true` |
-| `src/chat-end` | 聊天界面 | `IS_SERVER = false` |
+| 目录 | 用途 |
+| --- | --- |
+| `loop-chat` | Agent 聊天端 HarmonyOS 工程 |
+| `loop-chat/agent_core` | Agent 执行流程、工具注册和子任务编排 |
+| `gate-a/compute-probe` | 算力端 HarmonyOS 工程 |
+| `loop-minipc` | 远程推理协议的 JavaScript 参考实现及测试 |
+| `src/chat-end`、`src/model-end` | 基础聊天端与算力端工程 |
+| `gate-a/loop-client` | 近场连接与协议验证客户端 |
+| `scripts` | 测试和构建入口 |
 
-HarmonyOS 规定源码在 `entry/src/main/ets/` 下面。我们只多了一层分类：
+Agent 聊天端与算力端分别使用 `loop-chat`、`gate-a/compute-probe`。版本号以各工程的 `AppScope/app.json5` 为准。
 
-- `protocol/` 消息字段和分片
-- `nearby/` `linkEnhance`、BLE、角色开关
-- `llm/` 本机 GEWU
-- `cluster/` 内存和模型采样；选点只在模型端的 `ComputeRouter.ets`
-- `media/` 选图
-- `ui/` WebView 桥
-- `pages/` 页面
-- `entryability/` 生命周期
+## 环境要求
 
-设备编号文案在模型端 `cluster/DeviceLabels.ets`。两端的 `ChatProtocol.ets` 目前是各一份拷贝，改字段要两边一起动。
+- Node.js、JDK 17、DevEco Studio 或 HarmonyOS 命令行工具，以及 `ohpm`。
+- 工程配置的兼容 SDK 为 `6.0.2(22)`，目标 SDK 为 `6.1.0(23)`。
+- 支持 `linkEnhance` 的 HarmonyOS 设备。
+- 聊天端构建需要 AGenUI HAR，可通过 `loop-chat/scripts/fetch-agenui.sh` 获取，或使用已有 HAR。
 
-编 HAP 的命令写在 [算力端 README](src/model-end/README.md) 和 [聊天端 README](src/chat-end/README.md)。
+## 构建
+
+在 DevEco Studio 中分别打开 `loop-chat` 和 `gate-a/compute-probe`，同步依赖并构建 `entry` 模块。
+
+Windows 命令行构建可使用下面的入口。路径占位符需替换为实际安装位置：
+
+```powershell
+$env:JAVA_HOME = '<JDK 17 安装目录>'
+$env:Path = "$env:JAVA_HOME\bin;$env:Path"
+$env:DEVECO_SDK_HOME = '<HarmonyOS SDK 目录>'
+$env:HVIGOR_JS = '<hvigor.js 的完整路径>'
+$env:AGENUI_HAR = '<agenui.har 的完整路径>'
+
+.\scripts\build-hap.ps1 -Target agent-chat -InstallDependencies
+.\scripts\build-hap.ps1 -Target agent-compute -InstallDependencies
+```
+
+基础双端工程对应 `legacy-chat`、`legacy-compute`。构建产物位于各工程的 `entry/build/default/outputs/default/`。
+
+默认构建生成 unsigned HAP。安装到设备前，需要在相应工程配置签名。聊天端和算力端使用相同 bundleName，应分别安装到不同设备。
+
+## 模型与运行
+
+算力端使用 GEWU 加载 `Qwen2.5-7B-Instruct-Q4_N_0`。模型文件不包含在安装包中，需要放入算力端应用的：
+
+```text
+filesDir/models/Qwen2.5-7B-Instruct-Q4_N_0/
+├── api_config.json
+├── params
+└── tokenizer.json
+```
+
+1. 在算力设备安装算力端应用并部署模型文件。
+2. 开启设备蓝牙，完成所需的可信设备组网并授予应用权限。
+3. 在算力端启用近场服务，在聊天端连接算力设备。
+4. 等待模型服务就绪后，在聊天端提交任务。
+
+外部查询工具需要网络连接；需要授权的集成还需配置相应服务。工具执行在聊天端进行，模型推理通过算力中心调度。Qwen2.5-7B 是文本模型，图片附件不作为视觉输入。
+
+## 测试
+
+从仓库根目录运行：
+
+```powershell
+# TypeScript 不在默认路径时，指定其模块目录或 typescript.js。
+$env:TYPESCRIPT_PATH = '<TypeScript 模块目录或 typescript.js 路径>'
+node scripts/test-all.cjs all
+```
+
+`all` 运行全部测试入口；也可使用 `agent`、`legacy`、`protocol` 分别运行 Agent、基础双端和协议参考实现的测试。测试使用受控模型和平台接口，真机运行需在目标设备上验证。
+
+## 文档
+
+详细说明见 [文档索引](docs/README.md)，包括构建部署、Agent 流程、工具契约、多算力协作、通信协议与测试。
+
+## 版本记录
+
+功能变更见 [CHANGELOG.md](CHANGELOG.md)，Agent 版本记录见 [CHANGELOG.agent.md](CHANGELOG.agent.md)。

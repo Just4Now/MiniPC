@@ -1,0 +1,20 @@
+{
+  "useLocalLlm": true,
+  "localModelPath": "/data/storage/el2/base/haps/entry/files/model/Qwen2.5-7B-Instruct-Q4_N_0",
+  "localModelBackend": "knpu",
+  "localModelMaxContext": 2048,
+  "localModelRequestType": "qwen2",
+  "deterministicSkillRouting": false,
+  "localCollaboration": {
+    "enabled": true,
+    "isMaster": true,
+    "masterIP": "192.168.43.1",
+    "masterPort": 19090,
+    "broadcastPort": 7790,
+    "controlPort": 19091
+  },
+  "providerName": "ali-bailian-openai",
+  "apiKey": "sk-placeholder",
+  "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "model": "qwen-plus"
+}

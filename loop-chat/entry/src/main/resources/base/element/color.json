@@ -1,0 +1,24 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#EEF6F3"
+    },
+    {
+      "name": "page_background",
+      "value": "#EEF6F3"
+    },
+    {
+      "name": "text_primary",
+      "value": "#16332C"
+    },
+    {
+      "name": "send_button",
+      "value": "#0F8A74"
+    },
+    {
+      "name": "input_stroke",
+      "value": "#DCE0E2"
+    }
+  ]
+}

@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright (c) 2021 Huawei Device Co., Ltd.
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+          http://www.apache.org/licenses/LICENSE-2.0
+
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+
+    This is the configuration file template for OpenHarmony OSS Audit Tool, please copy it to your project root dir and modify it refer to OpenHarmony/tools_oat/README.
+
+-->
+
+<configuration>
+    <oatconfig>
+        <filefilterlist>
+            <filefilter name="defaultFilter" desc="Files not to check">
+                <filteritem type="filepath" name="example/.*/src/ohosTest/*" desc="ohosTest是DevEco Studio自动生成的目录，不手动修改"/>
+            </filefilter>
+            <filefilter name="copyrightPolicyFilter" desc="Filters for compatibility，license header policies">
+                <filteritem type="filename" name="hvigorfile.*" desc="hvigor配置文件，DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name="hvigorw" desc="hvigor配置文件，DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name="hvigorw.bat" desc="hvigor配置文件，DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name="hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filename" name="*.json5" desc="工程配置文件，DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name="*.json" desc="工程配置文件，DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name=".clang-tidy" desc="DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name=".ohpmignore" desc="DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name=".clangd" desc="DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name="index.d.ts" desc="DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filepath" name="example/15_aki_value/hmos/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/15_aki_value/ohos/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/0_show_case/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/1_helloworld/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/2_applicationInfo/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/3_callback/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/4_hybrid_napi/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/5_bind_from_js/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/6_structure/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/7_array_buffer_to_native/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/8_async_tasks/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/9_enumeration/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/10_map_for_object/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/11_napi_value/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/12_rawfile4js/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/13_array_to_native/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/14_reference_and_pointer/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/15_aki_value/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/16_promise/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/17_extendclass/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/18_pfunction/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/19_pmethod/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/20_structure_field/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/21_structure_property/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/20_aki_to_vector/entry/src/main/cpp/hello.cpp" desc="有添加版权头"/>
+
+			</filefilter>
+            <filefilter name="defaultPolicyFilter" desc="Filters for compatibility，license header policies">
+                <filteritem type="filename" name="hvigorfile.*" desc="hvigor配置文件，DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name="hvigorw" desc="hvigor配置文件，DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name="hvigorw.bat" desc="hvigor配置文件，DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name="hvigor-wrapper.js" desc="项目工程默认文件，不需要添加许可证头"/>
+                <filteritem type="filename" name="*.json5" desc="工程配置文件，DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name="*.json" desc="工程配置文件，DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name=".clang-tidy" desc="DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name=".ohpmignore" desc="DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name=".clangd" desc="DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name="index.d.ts" desc="DevEco Studio自动生成，不手动修改"/>
+                <filteritem type="filename" name="LICENSE" desc="LICENSE文件，无需添加许可头"/>
+                <filteritem type="filepath" name="example/15_aki_value/hmos/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/15_aki_value/ohos/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/0_show_case/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/1_helloworld/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/2_applicationInfo/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/3_callback/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/4_hybrid_napi/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/5_bind_from_js/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/6_structure/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/7_array_buffer_to_native/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/8_async_tasks/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/9_enumeration/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/10_map_for_object/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/11_napi_value/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/12_rawfile4js/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/13_array_to_native/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/14_reference_and_pointer/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/15_aki_value/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/16_promise/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/17_extendclass/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/18_pfunction/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/19_pmethod/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/20_structure_field/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/21_structure_property/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/20_aki_to_vector/entry/src/main/cpp/hello.cpp" desc="有添加版权头"/>
+            </filefilter>
+            <filefilter name="binaryFileTypePolicyFilter" desc="Filters for copyright header policies">
+                <filteritem type="filename" name="*.json5" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filename" name="*.png" desc="指导文档需要的png图片"/>
+                <filteritem type="filename" name="*.jpg" desc="指导文档需要的jpg图片"/>
+                <filteritem type="filepath" name="example/15_aki_value/hmos/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/15_aki_value/ohos/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/0_show_case/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/1_helloworld/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/2_applicationInfo/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/3_callback/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/4_hybrid_napi/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/5_bind_from_js/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/6_structure/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/7_array_buffer_to_native/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/8_async_tasks/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/9_enumeration/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/10_map_for_object/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/11_napi_value/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/12_rawfile4js/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/13_array_to_native/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/14_reference_and_pointer/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/15_aki_value/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/16_promise/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/17_extendclass/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/18_pfunction/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/19_pmethod/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/20_structure_field/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/21_structure_property/hvigor/hvigor-wrapper.js" desc="项目工程默认文件，不需要添加版权头"/>
+                <filteritem type="filepath" name="example/ohos/20_aki_to_vector/entry/src/main/cpp/hello.cpp" desc="有添加版权头"/>
+            </filefilter>
+        </filefilterlist>
+    </oatconfig>
+</configuration>

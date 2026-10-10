@@ -1,0 +1,21 @@
+{
+  "name": "qwen2",
+  "type": "qwen2",
+  "format": "gewu",
+  "tokenizer": {
+    "model_path": "tokenizer.json"
+  },
+  "params_path": "params",
+  "hparams": {
+    "n_vocab": 152064,
+    "n_embed": 3584,
+    "n_head": 28,
+    "head_dim": 128,
+    "n_kv_head": 4,
+    "n_layer": 28,
+    "n_ffn": 18944,
+    "rms_norm_eps": 0.000001,
+    "rope_freq_base": 1000000.0,
+    "rope_freq_scale": 1.0
+  }
+}
