@@ -159,3 +159,22 @@ git switch codex/integrate-agent
 当前 `main` 未变，因此无需回滚主线；合并前完整代码与文档由 tag 保留。原两个工作目录的未跟踪文件没有复制进新仓库，也没有清理。
 
 合入主线前还需要：原 MiniPC 选举/接管/编号/路由与新 Agent 功能对照、实际双端和多算力任务测试、取消/断链恢复、评估是否统一共享协议与项目目录。此次引入现有并行/中继代码，不声称已经在迁移分支重新验证多物理设备加速，也不为 Qwen 的特定问法添加规则。旧乱码问题按此前用户要求不处理。
+
+## 13. 已发布结果与最终核对
+
+- 历史导入提交：`a7b1dd74c9742ac007bf769fac50ab74182fbade`。
+- 文档、构建入口和测试适配提交：`b139c4953c15ec4964f5a3a953877fdcd7271c31`。
+- MiniPC 远端分支：[codex/integrate-agent](https://github.com/Keanu2/MiniPC/tree/codex/integrate-agent)。
+- 合并前 tag：[minipc-before-agent-20261010](https://github.com/Keanu2/MiniPC/tree/minipc-before-agent-20261010)。
+- 草稿 PR：[Keanu2/MiniPC #1](https://github.com/Keanu2/MiniPC/pull/1)，base=`main`，head=`codex/integrate-agent`，状态 OPEN / Draft。没有执行 PR 合并或发布稳定版本。
+- 发布后 `git ls-remote` 核实 MiniPC main 仍为 `7f04eddd484d9f665b008177d5d44c153e74d5af`，Agent-MiniPC master 仍为 `ff76d8d1a90b6bb3cb1bb5431238bdc662b3c6ba`。
+
+此发布记录单独提交并推送：
+
+```powershell
+git add docs/agent-integration-2026-10-10.md
+git commit -m "Record published integration branch and draft review"
+git -c push.followTags=false push origin codex/integrate-agent
+```
+
+后续继续开发请使用 `D:\MiniPC-integrate` 的 `codex/integrate-agent` 分支。原 `D:\MiniPC`、`D:\Agent-MiniPC` 工作区保持原分支及未跟踪文件。该记录对应“独立迁移分支 + 待验收后合入主线”的阶段成果，不代表已经统一所有运行时协议或完成真机兼容验收。
