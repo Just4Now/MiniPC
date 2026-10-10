@@ -1,104 +1,86 @@
 # MiniPC
 
-此迁移分支把 Agent-MiniPC 引入 MiniPC 主仓库，保留两边提交历史。`main` 仍保持原 MiniPC 版本；迁移尚未发布为稳定版。完整操作、验证和回退步骤见 [迁移记录](docs/agent-integration-2026-10-10.md)。
+MiniPC 是面向 HarmonyOS NEXT 的近场算力协同项目。聊天端负责用户交互、Agent 工具调用和结果汇总；算力端运行本地模型并处理推理请求。设备之间通过 BLE 发现和 `linkEnhance` 通信。
 
-当前迁移分支为 [`integrate-agent`](https://github.com/Keanu2/MiniPC/tree/integrate-agent)，审查入口为 [草稿 PR #2](https://github.com/Keanu2/MiniPC/pull/2)。按用户要求，后续分支命名不使用 `codex/` 前缀。改名未改变源码或提交历史，步骤见 [分支改名记录](docs/branch-rename-2026-10-10.md)。
+## 功能
 
-## 开发入口
+- Agent 根据任务调用注册工具，支持文件读取、计算、单位换算、天气、车次和地点查询。
+- 独立子任务支持并发推理和结果汇总，算力中心负责请求路由。
+- 算力设备支持发现、编号、中心选举和接管，界面显示设备状态与任务记录。
+- 推理请求支持取消、超时和结果完整性校验；聊天端显示任务总耗时。
 
-| 目录 | 用途 | 状态 |
-| --- | --- | --- |
-| `loop-chat` | Agent 聊天端与通用 `agent_core` | 新开发入口，当前同步版本 1.2.16 |
-| `gate-a/compute-probe` | Agent 算力端 | 新开发入口，当前同步版本 1.0.19 |
-| `loop-minipc` | 远程推理协议的 JavaScript 参考实现与回归 | 参考实现，不是安装到设备的 HAP |
-| `src/chat-end` / `src/model-end` | 原 MiniPC 聊天端与算力端 | 保留用于功能对照，源码未被新实现覆盖 |
-| `gate-a/loop-client` | 早期近场客户端验证工程 | 历史测试入口，不作为新 Agent 聊天端 |
+## 目录
 
-项目目录暂不搬迁，避免把路径变更与协议迁移混在一个提交中。新功能在 Agent 入口开发；原 MiniPC 的设备选举、中心接管、编号与路由继续作为兼容验收基线。保留旧代码不等于已经验证新旧应用可以混装互通。
+| 目录 | 用途 |
+| --- | --- |
+| `loop-chat` | Agent 聊天端 HarmonyOS 工程 |
+| `loop-chat/agent_core` | Agent 执行流程、工具注册和子任务编排 |
+| `gate-a/compute-probe` | 算力端 HarmonyOS 工程 |
+| `loop-minipc` | 远程推理协议的 JavaScript 参考实现及测试 |
+| `src/chat-end`、`src/model-end` | 基础聊天端与算力端工程 |
+| `gate-a/loop-client` | 近场连接与协议验证客户端 |
+| `scripts` | 测试和构建入口 |
 
-Agent 最新源码含多请求、并行子任务和推理中继。实现及限制见 [并行子任务方案](docs/agent-parallel-subtasks-plan.md)。历史文档中的旧版本验收不能代替此分支的整包编译或多物理设备测试。
+Agent 聊天端与算力端分别使用 `loop-chat`、`gate-a/compute-probe`。版本号以各工程的 `AppScope/app.json5` 为准。
 
-## 统一测试
+## 环境要求
+
+- Node.js、JDK 17、DevEco Studio 或 HarmonyOS 命令行工具，以及 `ohpm`。
+- 工程配置的兼容 SDK 为 `6.0.2(22)`，目标 SDK 为 `6.1.0(23)`。
+- 支持 `linkEnhance` 的 HarmonyOS 设备。
+- 聊天端构建需要 AGenUI HAR，可通过 `loop-chat/scripts/fetch-agenui.sh` 获取，或使用已有 HAR。
+
+## 构建
+
+在 DevEco Studio 中分别打开 `loop-chat` 和 `gate-a/compute-probe`，同步依赖并构建 `entry` 模块。
+
+Windows 命令行构建可使用下面的入口。路径占位符需替换为实际安装位置：
 
 ```powershell
-# 如果 TypeScript 不在默认 SDK 路径，指定其模块目录或 typescript.js
-$env:TYPESCRIPT_PATH = 'D:\command-line-tools\sdk\default\openharmony\ets\build-tools\ets-loader\node_modules\typescript'
-node scripts/test-all.cjs all
-```
-
-也可选 `legacy`、`agent` 或 `protocol`，分别运行原 MiniPC、Agent/算力、协议参考实现的现有测试。日志里的套件计数包含嵌套运行器；它不是设备数量或独立测试用例总数。测试使用受控平台与模型，不安装应用，不调用真实外部工具。
-
-## 统一构建
-
-需要 Node.js、JDK 17、HarmonyOS SDK、hvigor 和可用的 `ohpm`。SDK 路径属于本机配置，不提交到仓库。
-
-```powershell
-$env:JAVA_HOME = 'D:\MiniPC\tools\jdk\jdk-17.0.20.1+1'
+$env:JAVA_HOME = '<JDK 17 安装目录>'
 $env:Path = "$env:JAVA_HOME\bin;$env:Path"
-$env:DEVECO_SDK_HOME = 'D:\command-line-tools\sdk'
-$env:HVIGOR_JS = 'D:\command-line-tools\hvigor\hvigor\bin\hvigor.js'
+$env:DEVECO_SDK_HOME = '<HarmonyOS SDK 目录>'
+$env:HVIGOR_JS = '<hvigor.js 的完整路径>'
+$env:AGENUI_HAR = '<agenui.har 的完整路径>'
 
-# AGenUI 是忽略的外部 HAR。可以使用 fetch-agenui.sh 获取，或提供已有文件。
-$env:AGENUI_HAR = '已有 AGenUI HAR 的绝对路径'
 .\scripts\build-hap.ps1 -Target agent-chat -InstallDependencies
 .\scripts\build-hap.ps1 -Target agent-compute -InstallDependencies
 ```
 
-旧实现对应 `legacy-chat`、`legacy-compute`。输出位于各项目 `entry/build/default/outputs/default/`。默认只生成 unsigned HAP；需要安装时，在对应工程自行配置 DevEco 签名。私钥、模型权重、SDK、构建包和本机依赖不随此次迁移复制或发布。
+基础双端工程对应 `legacy-chat`、`legacy-compute`。构建产物位于各工程的 `entry/build/default/outputs/default/`。
 
-DevEco Studio 应分别打开 `loop-chat` 或 `gate-a/compute-probe`，而不是把仓库根目录作为 HarmonyOS 工程。二者目前使用相同 bundleName，不能当成同一设备上的两个独立应用同时安装。
+默认构建生成 unsigned HAP。安装到设备前，需要在相应工程配置签名。聊天端和算力端使用相同 bundleName，应分别安装到不同设备。
 
-## 版本与历史
+## 模型与运行
 
-- 合并前完整快照：`minipc-before-agent-20261010`，对应 MiniPC `7f04edd`。
-- 原 MiniPC 程序基线：`v0.4-hub`。上面的完整快照只比它多一个文档提交。
-- 原 MiniPC 版本记录：[CHANGELOG.md](CHANGELOG.md)。
-- 导入的 Agent 版本记录：[CHANGELOG.agent.md](CHANGELOG.agent.md)。
-- 合入 `main` 前需要完成原功能对照、新双端构建和真机验收；分支测试通过不等于已发布。
+算力端使用 GEWU 加载 `Qwen2.5-7B-Instruct-Q4_N_0`。模型文件不包含在安装包中，需要放入算力端应用的：
 
-## 原 MiniPC 说明（v0.4-hub 与合并前文档）
+```text
+filesDir/models/Qwen2.5-7B-Instruct-Q4_N_0/
+├── api_config.json
+├── params
+└── tokenizer.json
+```
 
-下面保留原说明用于功能对照。它描述 `src/chat-end` / `src/model-end`，不能直接套用于新 Agent 的推理预算和并行执行。
-算力协同，由算力端和聊天端组成，靠蓝牙近场连接。具有两个独立 HAP。
+1. 在算力设备安装算力端应用并部署模型文件。
+2. 开启设备蓝牙，完成所需的可信设备组网并授予应用权限。
+3. 在算力端启用近场服务，在聊天端连接算力设备。
+4. 等待模型服务就绪后，在聊天端提交任务。
 
-现在的版本是 [v0.4-hub](https://github.com/Keanu2/MiniPC/releases/tag/v0.4-hub)。改过什么看 [CHANGELOG.md](CHANGELOG.md)。
+外部查询工具需要网络连接；需要授权的集成还需配置相应服务。工具执行在聊天端进行，模型推理通过算力中心调度。Qwen2.5-7B 是文本模型，图片附件不作为视觉输入。
 
-## 怎么跑起来的
+## 测试
 
-算力机（`src/model-end`，`IS_SERVER = true`）先用 manufacturer `0x6E77`、type `1` 的 BLE 广播互相发现，按组网时可用内存选出算力设备1。启动后留 10 秒选举窗口，编号确定后才发布编号广播；广播只在编号真正变化且没有在途任务时更新。聊天机只连接可信的算力设备1，连上之后标题显示「聊天设备N」，状态栏写「协同已就绪」。算力设备1统一接收、调度并回传，其他算力设备只与它保持算力链路。
+从仓库根目录运行：
 
-算力设备1停用后，存活算力按旧排名确认接管：至少15秒、三次成功完成的扫描均未发现旧中心后，由当前可见存活成员中排名最靠前的一台接管为1号并发布新广播；聊天端在接管窗口内继续有限次重连，不会直接连仍编号为2的节点。已连上中心的执行节点不再自己猜编号，等中心按安装 UID 分配；第三台、第四台不会再都自称算力设备2。
+```powershell
+# TypeScript 不在默认路径时，指定其模块目录或 typescript.js。
+$env:TYPESCRIPT_PATH = '<TypeScript 模块目录或 typescript.js 路径>'
+node scripts/test-all.cjs all
+```
 
-轻量内存、温度、CPU 和推理路数在空闲时每 2 秒更新。成员变化由中心立刻同步：推理进行中只发精简名单（身份、角色、编号、ready），空闲时发完整清单，没有变化则 30 秒保底。失败会按连接重试。细节、容量边界和尚未做完的真机轮次见 [2026-09-23 多算力审查](docs/multi-compute-membership-review-2026-09-23.md)。更早的中心接管和广播修复见 [2026-09-22 修复记录](docs/nearby-identity-and-hub-failover-fix-2026-09-22.md)，其中「推理期间不发后台控制消息」已被上面的精简名单替代。
+`all` 运行全部测试入口；也可使用 `agent`、`legacy`、`protocol` 分别运行 Agent、基础双端和协议参考实现的测试。测试使用受控模型和平台接口，真机运行需在目标设备上验证。
 
-消息走 `linkEnhance`，协议叫 `nearby-chat-v1`，帧大概 480 字节 Base64，编解码在 `protocol/ChatProtocol.ets`。
+## 版本记录
 
-聊天机连上中心后所有新请求都发给算力设备1；仅在未连接中心且本机部署权重时保留离线本地推理。1号接到请求后按负载和可用内存选执行机。代码在 `cluster/ComputeRouter.ets` 的 `pickNode`。派出去的请求带 `sched=true`，对面必须自己跑并经1号回传结果。
-
-算力编号按组网时的可用内存排一次（余量最大的是算力设备1，平手按安装 UID），内存后来涨跌不再改号；中心失效后按存活成员重新编号。界面上只显示「算力设备N / 聊天设备N」，不出现手机蓝牙名。聊天机由当前中心按安装 UID 分配不重复编号，同一近场服务会话保留已分配号码供重连使用；更换中心后可能重新分配，不是物理设备永久编号。回复末尾的「由算力设备N推理」是协调机改写 `done.source` 写上去的。
-
-两端都能附图，但现在这颗 Qwen2.5-7B-Instruct 是文本模型，图只显示在气泡/任务卡里，既不进推理也不走近场。
-
-签名用本机 `tools/signing`，证书别提交。模型文件也不进 Git，放到应用 `filesDir/models/Qwen2.5-7B-Instruct-Q4_N_0`。
-
-## 目录
-
-| | 干什么 | 开关 |
-|---|---|---|
-| `src/model-end` | 跑模型、选点、仪表盘 | `nearby/NearbyConfig.ets` 里 `IS_SERVER = true` |
-| `src/chat-end` | 聊天界面 | `IS_SERVER = false` |
-
-HarmonyOS 规定源码在 `entry/src/main/ets/` 下面。我们只多了一层分类：
-
-- `protocol/` 消息字段和分片
-- `nearby/` `linkEnhance`、BLE、角色开关
-- `llm/` 本机 GEWU
-- `cluster/` 内存和模型采样；选点只在模型端的 `ComputeRouter.ets`
-- `media/` 选图
-- `ui/` WebView 桥
-- `pages/` 页面
-- `entryability/` 生命周期
-
-设备编号文案在模型端 `cluster/DeviceLabels.ets`。两端的 `ChatProtocol.ets` 目前是各一份拷贝，改字段要两边一起动。
-
-编 HAP 的命令写在 [算力端 README](src/model-end/README.md) 和 [聊天端 README](src/chat-end/README.md)。
+功能变更见 [CHANGELOG.md](CHANGELOG.md)，Agent 版本记录见 [CHANGELOG.agent.md](CHANGELOG.agent.md)。

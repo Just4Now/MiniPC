@@ -4,18 +4,21 @@
 
 ## [Unreleased]
 
-### Changed — Agent upstream sync (2026-10-10)
+### Added
 
-- Sync Agent-MiniPC `c9afb30`: Agent chat 1.2.16 and compute 1.0.19.
-- Display elapsed task time without adding it to model conversation history; retain up to 40 finished compute cards instead of 8.
-- Preserve migration signing defaults, unified entry points and test compatibility. Verification and commands: [upstream sync record](docs/agent-sync-2026-10-10-c9afb30.md).
-### Added — Agent integration branch (2026-10-10)
+- Agent 聊天端、通用工具执行流程及独立子任务并发推理与汇总。
+- 远程推理协议参考实现，以及统一测试、双端构建入口。
 
-- Import Agent-MiniPC commit `ff76d8d1a90b6bb3cb1bb5431238bdc662b3c6ba` while preserving both repositories' Git histories. This is a migration branch, not a new stable release.
-- Keep the original `src/chat-end` and `src/model-end` implementations for comparison. Agent projects are `loop-chat`, `gate-a/compute-probe`, and the `loop-minipc` protocol reference.
-- Preserve Agent version records in [CHANGELOG.agent.md](CHANGELOG.agent.md). Existing MiniPC version records and tags retain their original meaning.
-- Operation log and validation: [Agent integration record](docs/agent-integration-2026-10-10.md).
+### Changed
 
+- 聊天端更新至 1.2.16，算力端更新至 1.0.19。
+- 聊天端显示任务总耗时，耗时信息不进入模型对话历史。
+- 算力端已完成任务记录上限由 8 提高到 40。
+- 聊天端默认构建不依赖本机签名证书；设备安装需单独配置签名。
+
+### Fixed
+
+- 页面生命周期测试兼容 CRLF 换行，协议验证客户端测试补齐平台接口桩。
 ## [v0.4-hub] - 2026-09-23
 
 聊天只连选出的算力设备1；停用1号后其余算力确认接管，聊天机能重连。算力卡片能看温度和 CPU。
