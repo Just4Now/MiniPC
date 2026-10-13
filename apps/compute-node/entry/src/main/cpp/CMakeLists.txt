@@ -1,5 +1,80 @@
 cmake_minimum_required(VERSION 3.5.0)
 project(GewuProbe)
 set(CMAKE_CXX_STANDARD 17)
+
+# ---- 文本 GEWU 引擎探针（系统 QoS GEWU 服务，backend=knpu，无 NPU 直连）----
 add_library(gewu_probe SHARED gewu_probe.cpp)
 target_link_libraries(gewu_probe PUBLIC libace_napi.z.so libqos.so libhilog_ndk.z.so)
+
+# ---- Qwen2.5-VL-3B-NPU 多模态引擎桥（移植 modelshare t7/t8 已验证的 NPU 链路）----
+# 预编译产物：src/main/cpp/libs/${OHOS_ARCH}/（libqwen2vl_sdk.so = NPU 版 9,388,104B，
+# 含 knpu 符号 + DT_NEEDED libc++.so->libcxx.so 等长 patch 版；libcxx.so = SDK 的 C++
+# 运行时，自定义名规避打包器对 libc++.so 的系统库白名单丢弃）。
+add_library(qwenvl_engine SHARED napi_engine.cpp)
+set(QWEN2VL_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs/${OHOS_ARCH}")
+
+add_library(qwen2vl_sdk SHARED IMPORTED)
+set_target_properties(qwen2vl_sdk PROPERTIES
+    IMPORTED_LOCATION "${QWEN2VL_SDK_DIR}/libqwen2vl_sdk.so"
+)
+add_library(cjson SHARED IMPORTED)
+set_target_properties(cjson PROPERTIES
+    IMPORTED_LOCATION "${QWEN2VL_SDK_DIR}/libcjson.z.so"
+)
+add_library(cxx SHARED IMPORTED)
+set_target_properties(cxx PROPERTIES
+    IMPORTED_LOCATION "${QWEN2VL_SDK_DIR}/libcxx.so"
+)
+
+# NPU kernel（CCE 算子）与 base（引擎符号库）：NPU 引擎 load 时运行期
+# dlopen("libgewurt_kernel.so")（src/knpu/knpu_cce.cpp L303），kernel 又
+# NEEDED libgewurt_base.so。两者必须打进 HAP 与 SDK 同目录，否则
+# load 10ms 快速失败（KNPU backend disabled, QWEN2VL_ERR_LOAD=-3）。
+add_library(gewurt_kernel SHARED IMPORTED)
+set_target_properties(gewurt_kernel PROPERTIES
+    IMPORTED_LOCATION "${QWEN2VL_SDK_DIR}/libgewurt_kernel.so"
+)
+add_library(gewurt_base SHARED IMPORTED)
+set_target_properties(gewurt_base PROPERTIES
+    IMPORTED_LOCATION "${QWEN2VL_SDK_DIR}/libgewurt_base.so"
+)
+
+# --- libai_runtime NPU 运行时链打包（运行期 dlopen("libai_runtime.so") 目标）---
+# 根因（modelshare t6）：App moduleNs_default 不含 /vendor/lib64/passthrough/indirect
+# → dlopen("libai_runtime.so") ENOENT → KnpuRt* 静默 0x56080001。
+# 措施（t7 已验证）：整条 vendor NPU 运行时链 + 系统侧依赖闭包 IMPORTED 进 HAP 与
+# SDK 同目录，并在 qwenvl_engine 上强制 DT_NEEDED（--no-as-needed）保证 hvigor
+# 打包 + 启动预加载。闭包实测：moduleNs_default 在引擎加载时刻无法解析
+# chipset-sdk-sp 短名（libhitrace_meter ENOENT）→ 系统侧依赖必须一并打包。
+# 含 libc++.so NEEDED 的库已字节级等长 patch 为 libcxx.so（备份 .pre_libcxx_patch.so）。
+# 22 库闭包（+libhilog 最终验证版一并入包）：
+set(LLM_AI_CHAIN
+    libai_runtime libnpu_slog libai_drv_dlog libai_drv_device
+    libai_drv_devmm libai_drv_profiling libai_drv_syslog
+    libai_om_trace_engine libai_om_event_manager libai_infra_log
+    libhitrace_meter libhitracechain libbegetutil.z libconfigpolicy_util.z
+    libsystemparam.z libsec_shared.z libdmabufheap.z libhilog
+    libhilog_inner libsandboxlog libhilog_encode libclang_rt.ubsan_minimal)
+foreach(lib ${LLM_AI_CHAIN})
+    add_library(${lib} SHARED IMPORTED)
+    set_target_properties(${lib} PROPERTIES
+        IMPORTED_LOCATION "${QWEN2VL_SDK_DIR}/${lib}.so")
+endforeach()
+
+target_include_directories(qwenvl_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(qwenvl_engine PUBLIC
+    libace_napi.z.so
+    libhilog_ndk.z.so
+    qwen2vl_sdk
+    cjson
+    cxx
+    gewurt_kernel
+    gewurt_base
+    ${LLM_AI_CHAIN}
+)
+
+# --no-as-needed：kernel/base 与 qwenvl_engine 无符号级引用，默认 as-needed
+# 会剔除它们的 DT_NEEDED，导致 hvigor 按链接关系收集 so 时不打包。
+# 强制写入 DT_NEEDED 后：1) 一定进 HAP；2) 进程启动即预加载，运行期
+# dlopen("libgewurt_kernel.so") 短名直接命中已加载 DSO。
+target_link_options(qwenvl_engine PRIVATE "-Wl,--no-as-needed")

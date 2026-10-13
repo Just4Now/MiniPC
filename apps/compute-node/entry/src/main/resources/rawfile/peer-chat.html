@@ -243,7 +243,8 @@
         const cpu=compute&&typeof device.cpuUsage==='number'&&device.cpuUsage>=0?device.cpuUsage:-1;
         const bar=(kind,label,value)=>value<0?'<span class="bar '+kind+'"></span>':
           '<span class="bar '+kind+'">'+label+' <i><b style="width:'+Math.min(100,value)+'%"></b></i>'+value+'%</span>';
-        const details=compute?'<div class="meta"><span class="model">'+esc(shortModel(device.model))+'</span>'+
+        const vision=(device.capabilities||[]).indexOf('vision')>=0;
+        const details=compute?'<div class="meta"><span class="model">'+esc(shortModel(device.model))+(vision?' · 多模态':'')+'</span>'+
           '<span class="heat">'+(heat?esc(heat):'')+'</span>'+
           bar('mem','内存',mem)+bar('cpu','CPU',cpu)+
           '<span class="jobs">推理 '+infer+'</span></div>':'';
@@ -298,7 +299,7 @@
       openIds[id]=!openIds[id];
       card.classList.toggle('open',openIds[id]);
     });
-    previewClear.addEventListener('click',()=>setPendingImage(''));
+    previewClear.addEventListener('click',()=>{window.chatBridge.clearImage();setPendingImage('');});
     promptInput.addEventListener('input',()=>{promptInput.style.height='auto';promptInput.style.height=Math.min(promptInput.scrollHeight,104)+'px';updateButton();});
     document.getElementById('composer').addEventListener('submit',(event)=>{
       event.preventDefault();

@@ -1,6 +1,13 @@
 import { util } from '@kit.ArkTS';
 
 export interface ChatMessage { role: string; content: string; }
+/** Capability vocabulary shared by device declarations and request needs. */
+export const CAPABILITY_TAGS: string[] = ['text', 'vision'];
+/**
+ * 图片随请求传输的裸 base64 上限（无 data: 前缀）。约束链：分片层 MAX_FRAME 64KiB、
+ * 原生 NAPI 入参 64KiB——24000 字符 base64（约 18KB JPEG）加消息文本后两侧都留有余量。
+ */
+export const MAX_IMAGE_BASE64: number = 24000;
 export interface DeviceInfoEntry {
   id?: string;
   /** Stable per-install identity. `id` remains for compatibility with older builds. */
@@ -18,6 +25,8 @@ export interface DeviceInfoEntry {
   cpuUsage?: number;
   model?: string;
   modelRequests?: number;
+  /** Model capabilities declared by the deployment, e.g. ['text', 'vision']. */
+  capabilities: string[];
   ready?: boolean;
   slot?: number;
 }
@@ -43,6 +52,11 @@ export interface WireMessage {
   cpuUsage?: number;
   model?: string;
   modelRequests?: number;
+  capabilities?: string[];
+  /** Capabilities a request needs; routing fails closed when no device has them. */
+  needs?: string[];
+  /** 本次请求携带的 JPEG 图片，裸 base64（无 data: 前缀）；带图请求必须需要 vision。 */
+  image?: string;
   devices?: DeviceInfoEntry[];
   slot?: number;
   /** Stable per-install identity exchanged during hello/roster sync. */
@@ -101,7 +115,7 @@ export interface InferProfile {
   cluster?: ClusterInfo;
 }
 
-const PROTOCOL = 'nearby-chat-v1';
+const PROTOCOL = 'nearby-chat-v2';
 const MAX_FRAME = 65536;
 
 function validOptionalString(value: string | undefined, max: number): boolean {
@@ -110,6 +124,15 @@ function validOptionalString(value: string | undefined, max: number): boolean {
 
 function validOptionalNumber(value: number | undefined): boolean {
   return value === undefined || (typeof value === 'number' && Number.isFinite(value));
+}
+
+/** Required capability list: an array of known tags, bounded by `max` items. */
+function validCapabilities(value: string[] | undefined, max: number): boolean {
+  if (!Array.isArray(value) || value.length > max) return false;
+  for (const tag of value) {
+    if (typeof tag !== 'string' || CAPABILITY_TAGS.indexOf(tag) < 0) return false;
+  }
+  return true;
 }
 
 function validDeviceEntry(entry: DeviceInfoEntry): boolean {
@@ -122,6 +145,7 @@ function validDeviceEntry(entry: DeviceInfoEntry): boolean {
     validOptionalNumber(entry.batteryTemp) && validOptionalNumber(entry.cpuUsage) &&
     validOptionalString(entry.model, 128) &&
     validOptionalNumber(entry.modelRequests) &&
+    validCapabilities(entry.capabilities, 8) &&
     (entry.ready === undefined || typeof entry.ready === 'boolean') &&
     (entry.slot === undefined || (Number.isInteger(entry.slot) && entry.slot >= 1 && entry.slot <= 64));
 }
@@ -131,7 +155,7 @@ function validDeviceInfo(m: WireMessage): boolean {
     validOptionalNumber(m.memTotal) && validOptionalNumber(m.memAvail) &&
     validOptionalNumber(m.memUsage) && validOptionalNumber(m.thermalLevel) &&
     validOptionalNumber(m.batteryTemp) && validOptionalNumber(m.cpuUsage) &&
-    validOptionalNumber(m.modelRequests) &&
+    validOptionalNumber(m.modelRequests) && validCapabilities(m.capabilities, 8) &&
     (m.peerRole === undefined || m.peerRole === 'compute' || m.peerRole === 'chat');
 }
 
@@ -169,6 +193,13 @@ export function validMessage(m: WireMessage): boolean {
   if (m.type.indexOf('infer.') === 0) return validInference(m);
   if (m.type !== 'request' || !Array.isArray(m.messages) || m.messages.length === 0 || m.messages.length > 7) return false;
   if (m.sched !== undefined && m.sched !== true && m.sched !== false) return false;
+  if (!validCapabilities(m.needs, 4)) return false;
+  // 带图请求必须声明 vision 需求：保证能力路由永远不把图片交给纯文本设备。
+  if (m.image !== undefined) {
+    if (typeof m.image !== 'string' || m.image.length === 0 || m.image.length > MAX_IMAGE_BASE64 ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(m.image)) return false;
+    if (m.needs === undefined || m.needs.indexOf('vision') < 0) return false;
+  }
   if (!validOptionalString(m.origin, 128)) return false;
   let length = 0;
   for (const message of m.messages) {

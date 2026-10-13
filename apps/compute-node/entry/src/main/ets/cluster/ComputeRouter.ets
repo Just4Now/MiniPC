@@ -3,6 +3,10 @@
  * 负载 = 采样请求数与在途派发的较大者；有模型的节点里选负载最低、内存更大者。
  * MiniPC 本机可多路 session，因此满载仍可选本机，只有没有任何模型时才返回 null。
  *
+ * 能力是硬门槛：请求 needs 的每一项都必须在节点 capabilities 里，不满足的节点
+ * 直接出局，排在空闲/负载/内存/本机之前；没有任何合格节点返回 null（fail closed，
+ * 绝不把请求降级给不具备能力的设备）。
+ *
  * 派发身份分两层：
  * - originKey（来源会话 + 客户端 requestId）是这张卡片的身份，用来找回任务、回信给来源方；
  * - forwardId 是发给执行设备的 requestId。执行设备只会把它收到的 id 原样回传，
@@ -14,6 +18,8 @@ export class ScheduleNode {
   name: string = '';
   isSelf: boolean = false;
   model: string = '';
+  /** 该节点模型可提供的能力（如 ['text', 'vision']）；未声明按纯文本处理。 */
+  capabilities: string[] = ['text'];
   requests: number = -1;
   memAvail: number = -1;
 }
@@ -50,11 +56,19 @@ export function dispatchKey(entry: DispatchEntry): string {
   return originKeyOf(entry.originEpoch, entry.originRequestId);
 }
 
-export function pickNode(nodes: ScheduleNode[]): ScheduleNode | null {
+/** 需求为空时任何有模型节点都可服务；否则每一项都要在节点能力表里。 */
+export function meetsNeeds(node: ScheduleNode, needs: string[]): boolean {
+  for (const need of needs) {
+    if (node.capabilities.indexOf(need) < 0) return false;
+  }
+  return true;
+}
+
+export function pickNode(nodes: ScheduleNode[], needs: string[] = []): ScheduleNode | null {
   let best: ScheduleNode | null = null;
   let bestLoad: number = Number.MAX_VALUE;
   for (const node of nodes) {
-    if (node.model.length === 0) continue;
+    if (node.model.length === 0 || !meetsNeeds(node, needs)) continue;
     const load = nodeLoad(node);
     if (best !== null && load >= 1 && bestLoad < 1) continue;
     if (best === null || load < bestLoad ||
@@ -75,13 +89,16 @@ function memAvailOf(node: ScheduleNode): number {
  * Experiment override. auto keeps pickNode. pin1/pin2 force this hub or the
  * other modeled compute. split sends the caller-chosen side: preferSelf is
  * decided by the hub so each chat stays on one device for the whole run.
+ * needs gates the scan itself: a pinned side without the capability yields
+ * null; split falls back to the other capable side.
  */
-export function pickRoute(nodes: ScheduleNode[], mode: string, preferSelf: boolean): ScheduleNode | null {
-  if (mode === 'auto' || mode.length === 0) return pickNode(nodes);
+export function pickRoute(nodes: ScheduleNode[], mode: string, preferSelf: boolean,
+  needs: string[] = []): ScheduleNode | null {
+  if (mode === 'auto' || mode.length === 0) return pickNode(nodes, needs);
   let self: ScheduleNode | null = null;
   let peer: ScheduleNode | null = null;
   for (const node of nodes) {
-    if (node.model.length === 0) continue;
+    if (node.model.length === 0 || !meetsNeeds(node, needs)) continue;
     if (node.isSelf) {
       self = node;
       continue;
@@ -94,7 +111,7 @@ export function pickRoute(nodes: ScheduleNode[], mode: string, preferSelf: boole
     if (preferSelf) return self !== null ? self : peer;
     return peer !== null ? peer : self;
   }
-  return pickNode(nodes);
+  return pickNode(nodes, needs);
 }
 
 export class ComputeRouter {

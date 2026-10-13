@@ -54,6 +54,17 @@ export function rankComputes(members: RankMember[]): string[] {
   copy.sort((left: RankMember, right: RankMember) => {
     const leftMem = left.memAvail < 0 ? -1 : left.memAvail;
     const rightMem = right.memAvail < 0 ? -1 : right.memAvail;
+    if (leftMem >= 0 && rightMem >= 0) {
+      // Relative tolerance: a VL box reading a few hundred MB lower than an
+      // idle text box must not flip the election back and forth every two
+      // seconds, which tears compute links down (E69D0195 after each change).
+      const bigger = leftMem >= rightMem ? leftMem : rightMem;
+      if (bigger > 0 && leftMem >= rightMem * 0.9 && leftMem <= rightMem * 1.1) {
+        if (left.key < right.key) return -1;
+        if (left.key > right.key) return 1;
+        return 0;
+      }
+    }
     if (leftMem !== rightMem) return rightMem - leftMem;
     if (left.key < right.key) return -1;
     if (left.key > right.key) return 1;

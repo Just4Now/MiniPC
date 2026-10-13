@@ -31,3 +31,18 @@ export function chatLabel(epoch: number, peers: NamedPeer[]): string {
 export function workerTail(workerEpoch: number, peers: NamedPeer[], selfName: string = '算力设备'): string {
   return '由' + computeLabel(workerEpoch, peers, selfName) + '推理';
 }
+
+/** 能力标签的中文名；未知标签原样返回，便于排查清单写错的情况。 */
+export function capabilityLabel(capability: string): string {
+  return capability === 'vision' ? '图片理解' : capability;
+}
+
+/** 需求列表转为中文并列短语，如 ['vision'] → "图片理解"。 */
+export function needsLabel(needs: string[]): string {
+  const parts: string[] = [];
+  for (const need of needs) {
+    if (need.length === 0 || parts.indexOf(need) >= 0) continue;
+    parts.push(need);
+  }
+  return parts.map((need: string): string => capabilityLabel(need)).join('、');
+}

@@ -1362,6 +1362,17 @@ export class LinkEnhanceChannel {
       // Once elected, the hub allocates membership even when discovery is
       // suspended for chat/inference or meshSettled was cleared by a peer drop.
       if (!establishedHub && (!this.meshSettled || !this.electionReady)) return;
+      // No local re-election while an established compute handshake exists. The
+      // two boxes sample memAvail at different moments and a VL hub reads lower
+      // than an idle text box, so both could crown themselves slot 1 and the
+      // hub-side prune tears the healthy link down (E69D0195 after ~10s, i.e.
+      // the election timer). The dialled peer's role/slot is authoritative: a
+      // worker that dialled a hub must join it, not re-elect against it. The
+      // accepting hub keeps its own election (it may legitimately be the hub).
+      if (!establishedHub && this.peers.some((peer: Peer) =>
+        peer.role === 'compute' && !peer.fromServer &&
+        (peer.ready || peer.opened) && (peer.computeSlot === 1 || peer.ready || peer.hello)))
+        return this.applyJoinedPeerView();
       const members: RankMember[] = [];
       const self = new RankMember();
       self.key = this.computeKey(this.localUid(), this.localName());
@@ -1397,6 +1408,46 @@ export class LinkEnhanceChannel {
     } finally {
       this.rankingSlots = false;
     }
+  }
+
+  /**
+   * A compute peer that already exchanged hello with us knows the star topology
+   * better than our local memory snapshot. Freeze its declared hub first and
+   * ourselves after it, so the two boxes never elect each other as two hubs
+   * from independently sampled memAvail. Only the dialling side (client of the
+   * link) adopts the peer-first view: the accepting server must never demote
+   * itself, it stays the hub candidate until a remote roster/claim says
+   * otherwise. Without a declared hub we stay last; the hub's next roster sync
+   * assigns the authoritative rank.
+   */
+  private applyJoinedPeerView(): void {
+    const selfKey = this.computeKey(this.localUid(), this.localName());
+    const dialled = this.peers.filter((peer: Peer) =>
+      peer.role === 'compute' && !peer.fromServer && (peer.ready || peer.opened));
+    if (dialled.length === 0) {
+      // Accepting side: keep the current view so an established hub does not
+      // re-elect itself against a just-joined worker.
+      this.applyComputeSlots();
+      this.pruneWorkerLinks();
+      return;
+    }
+    const hubPeer = dialled.find((peer: Peer) => peer.computeSlot === 1) || dialled[0];
+    const hubKey = this.computeKey(hubPeer.deviceUid || hubPeer.peerId, hubPeer.helloName);
+    if (hubKey.length === 0 || hubKey === selfKey) {
+      this.applyComputeSlots();
+      this.pruneWorkerLinks();
+      return;
+    }
+    const keys: string[] = [hubKey];
+    for (const peer of dialled) {
+      const key = this.computeKey(peer.deviceUid || peer.peerId, peer.helloName);
+      if (key.length === 0 || key === hubKey || key === selfKey || keys.indexOf(key) >= 0) continue;
+      keys.push(key);
+    }
+    if (keys.indexOf(selfKey) < 0) keys.push(selfKey);
+    this.frozenComputeKeys = keys;
+    this.applyComputeSlots();
+    this.pruneWorkerLinks();
   }
 
   private computeKey(peerId: string, name: string): string {
