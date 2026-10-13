@@ -61,3 +61,6 @@ Thumbs.db
 
 # Local HAR dependencies
 *.har
+
+# Local working notes: the migration plan folder, never tracked
+plan/
