@@ -64,3 +64,8 @@ Thumbs.db
 
 # Local working notes: the migration plan folder, never tracked
 plan/
+
+# VL 多模态私有预编译库：仅本机放置，绝不入库
+# 期望清单见 apps/compute-node/entry/src/main/cpp/libs.manifest.json
+**/entry/src/main/cpp/libs/
+**/*.so
