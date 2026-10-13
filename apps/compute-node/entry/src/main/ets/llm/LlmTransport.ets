@@ -15,7 +15,7 @@ export class LocalLlmTransport implements LlmTransport {
   constructor(chat: LocalChat) { this.chat = chat; }
   readinessError(): string { return this.chat.readinessError(); }
   start(messages: ChatMessage[], callback: (update: ChatUpdate) => void, requestId?: string, image?: string): string {
-    return this.chat.start(messages, callback, requestId || '', image || '');
+    return this.chat.start(messages, callback, requestId || '', { image: image || '' });
   }
   cancel(requestId?: string): void { this.chat.cancel(requestId); }
 }

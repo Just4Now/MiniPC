@@ -1,7 +1,7 @@
 // node VlLlmTransport.test.cjs [path/to/typescript/lib/typescript.js]
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const { transpile } = require('../../../../../../tests/harness.cjs');
+const { transpile } = require('../../../../../../../tests/ets-harness.cjs');
 
 // ---- 文件系统桩：记录写过什么，模拟可读可写沙箱 cache ----
 const writes = [];

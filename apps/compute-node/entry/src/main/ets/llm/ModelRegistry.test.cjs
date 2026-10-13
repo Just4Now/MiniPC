@@ -1,7 +1,7 @@
 // node ModelRegistry.test.cjs [path/to/typescript/lib/typescript.js]
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const { transpile } = require('../../../../../../tests/harness.cjs');
+const { transpile } = require('../../../../../../../tests/ets-harness.cjs');
 // 单一 files 映射模拟文件系统：键为完整路径，值为内容；'' 表示空文件。
 const files = {};
 let now = 0;
