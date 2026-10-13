@@ -25,8 +25,11 @@ export interface DeviceInfoEntry {
   cpuUsage?: number;
   model?: string;
   modelRequests?: number;
-  /** Model capabilities declared by the deployment, e.g. ['text', 'vision']. */
-  capabilities: string[];
+  /**
+   * 部署声明的模型能力，如 ['text', 'vision']。
+   * 缺省 = 老对端（v1）未声明，按纯文本处理。
+   */
+  capabilities?: string[];
   ready?: boolean;
   slot?: number;
 }
@@ -115,7 +118,17 @@ export interface InferProfile {
   cluster?: ClusterInfo;
 }
 
-const PROTOCOL = 'nearby-chat-v2';
+/**
+ * 协议号保持 v1。
+ *
+ * 收发两端都用精确匹配校验（`m.protocol !== PROTOCOL` 即拒收），而聊天端
+ * apps/agent-client 与 legacy/* 目前都还是 v1。本次只改 apps/compute-node，
+ * 若在此升到 v2，两边会互相拒收**全部**消息（不只是带图请求）。
+ *
+ * 多模态需要的能力/需求/图片字段都是**可选追加**，v1 对端的校验只检查已知字段、
+ * 会忽略它们，因此不需要升号。等聊天端一起升级时再统一改这里。
+ */
+const PROTOCOL = 'nearby-chat-v1';
 const MAX_FRAME = 65536;
 
 function validOptionalString(value: string | undefined, max: number): boolean {
@@ -126,8 +139,14 @@ function validOptionalNumber(value: number | undefined): boolean {
   return value === undefined || (typeof value === 'number' && Number.isFinite(value));
 }
 
-/** Required capability list: an array of known tags, bounded by `max` items. */
+/**
+ * 能力清单：已知标签组成的数组，长度上限 `max`。
+ *
+ * `undefined` 合法 = 对端未声明能力，按纯文本处理；路由侧 meetsNeeds 会因此
+ * fail closed，绝不会把带图请求交给它。这样 v1 对端（不带该字段）仍能互通。
+ */
 function validCapabilities(value: string[] | undefined, max: number): boolean {
+  if (value === undefined) return true;
   if (!Array.isArray(value) || value.length > max) return false;
   for (const tag of value) {
     if (typeof tag !== 'string' || CAPABILITY_TAGS.indexOf(tag) < 0) return false;

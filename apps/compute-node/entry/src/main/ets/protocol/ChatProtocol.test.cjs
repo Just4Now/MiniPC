@@ -63,32 +63,32 @@ const malformedUtf8 = JSON.stringify({ version: 1, id: 'utf8', count: 1, index: 
 assert.throws(() => new MessageAssembler().receive(malformedUtf8));
 const invalidMessage = JSON.stringify({ version: 1, id: 'schema', count: 1, index: 0, data: Buffer.from('{}').toString('base64') });
 assert.throws(() => new MessageAssembler().receive(invalidMessage), /Invalid chat message/);
-assert(!validMessage({ protocol: 'nearby-chat-v2', type: 'heartbeat' }));
-assert(!validMessage({ protocol: 'nearby-chat-v2', type: 'heartbeat_ack' }));
+assert(!validMessage({ protocol: 'nearby-chat-v1', type: 'heartbeat' }));
+assert(!validMessage({ protocol: 'nearby-chat-v1', type: 'heartbeat_ack' }));
 const expiry = new MessageAssembler();
 expiry.receive(frames[0]);
 now += 15000;
 assert.throws(() => expiry.checkExpiry(), /timed out/);
 assert.doesNotThrow(() => expiry.checkExpiry(), 'expired pending messages are cleared');
 assert.equal(expiry.receive(encodeMessage({ type: 'hello' }, 'idle')[0]).type, 'hello');
-assert(validMessage({ protocol: 'nearby-chat-v2', type: 'hello' }));
-assert(validMessage({ protocol: 'nearby-chat-v2', type: 'hello', peerRole: 'chat' }));
-assert(validMessage({ protocol: 'nearby-chat-v2', type: 'hello_ack', peerRole: 'compute' }));
-assert(validMessage({ protocol: 'nearby-chat-v2', type: 'hello_ack', peerRole: 'compute', slot: 2 }));
-assert(validMessage({ protocol: 'nearby-chat-v2', type: 'hello', peerRole: 'compute', deviceUid: 'install-1234' }));
-assert(!validMessage({ protocol: 'nearby-chat-v2', type: 'hello', deviceUid: 'x'.repeat(65) }));
-assert(!validMessage({ protocol: 'nearby-chat-v2', type: 'hello_ack', slot: 0 }));
-assert(!validMessage({ protocol: 'nearby-chat-v2', type: 'hello_ack', slot: 2.5 }));
-assert(!validMessage({ protocol: 'nearby-chat-v2', type: 'deviceInfoSync', requestId: 'fractional',
+assert(validMessage({ protocol: 'nearby-chat-v1', type: 'hello' }));
+assert(validMessage({ protocol: 'nearby-chat-v1', type: 'hello', peerRole: 'chat' }));
+assert(validMessage({ protocol: 'nearby-chat-v1', type: 'hello_ack', peerRole: 'compute' }));
+assert(validMessage({ protocol: 'nearby-chat-v1', type: 'hello_ack', peerRole: 'compute', slot: 2 }));
+assert(validMessage({ protocol: 'nearby-chat-v1', type: 'hello', peerRole: 'compute', deviceUid: 'install-1234' }));
+assert(!validMessage({ protocol: 'nearby-chat-v1', type: 'hello', deviceUid: 'x'.repeat(65) }));
+assert(!validMessage({ protocol: 'nearby-chat-v1', type: 'hello_ack', slot: 0 }));
+assert(!validMessage({ protocol: 'nearby-chat-v1', type: 'hello_ack', slot: 2.5 }));
+assert(!validMessage({ protocol: 'nearby-chat-v1', type: 'deviceInfoSync', requestId: 'fractional',
   devices: [{ id: 'worker', role: 'compute', capabilities: [], slot: 2.5 }] }));
-assert(!validMessage({ protocol: 'nearby-chat-v2', type: 'deviceInfoSync', requestId: 'bad-ready',
+assert(!validMessage({ protocol: 'nearby-chat-v1', type: 'deviceInfoSync', requestId: 'bad-ready',
   devices: [{ id: 'worker', role: 'compute', capabilities: [], slot: 2, ready: 'false' }] }));
-assert(!validMessage({ protocol: 'nearby-chat-v2', type: 'hello', peerRole: 'other' }));
+assert(!validMessage({ protocol: 'nearby-chat-v1', type: 'hello', peerRole: 'other' }));
 now += 1000000000;
 assert.doesNotThrow(() => expiry.checkExpiry(), 'completed message never creates an inference timeout');
 assert.equal(expiry.receive(encodeMessage({ type: 'done', requestId: 'r' }, 'after_idle')[0]).type, 'done');
 const info = {
-  protocol: 'nearby-chat-v2', type: 'deviceInfo', requestId: 'info-1', name: '算力', model: 'Qwen',
+  protocol: 'nearby-chat-v1', type: 'deviceInfo', requestId: 'info-1', name: '算力', model: 'Qwen',
   memUsage: 40, memAvail: 1000, memTotal: 2000, thermalLevel: 2, batteryTemp: 42, cpuUsage: 18,
   modelRequests: 1, capabilities: ['text', 'vision'], peerRole: 'compute'
 };
@@ -96,38 +96,45 @@ assert(validMessage(info));
 assert(!validMessage({ ...info, peerRole: 'other' }));
 assert(!validMessage({ ...info, thermalLevel: 'hot' }));
 assert(validMessage({ ...info, capabilities: [] }));
-assert(!validMessage({ ...info, capabilities: undefined }), 'capabilities is required');
+assert(validMessage({ ...info, capabilities: undefined }), 'undeclared capabilities mean text-only');
 assert(!validMessage({ ...info, capabilities: 'vision' }));
 assert(!validMessage({ ...info, capabilities: ['fly'] }));
 assert(!validMessage({ ...info, capabilities: Array(9).fill('text') }));
 // The compute↔compute info poll frame carries only this shape; it must stay valid
 // or encodeMessage throws in LinkEnhanceChannel.write and tears the link down.
-assert(validMessage({ protocol: 'nearby-chat-v2', type: 'deviceInfo', requestId: 'info-2', capabilities: [] }));
+assert(validMessage({ protocol: 'nearby-chat-v1', type: 'deviceInfo', requestId: 'info-2', capabilities: [] }));
 assert.equal(new MessageAssembler().receive(encodeMessage({
   type: 'deviceInfo', requestId: 'info-1', name: '算力', model: 'Qwen', memUsage: 40,
   thermalLevel: 2, batteryTemp: 42, cpuUsage: 18, capabilities: ['text'], peerRole: 'compute'
 }, 'info')[0]).batteryTemp, 42);
 const sync = {
-  protocol: 'nearby-chat-v2', type: 'deviceInfoSync', requestId: 'sync-1',
+  protocol: 'nearby-chat-v1', type: 'deviceInfoSync', requestId: 'sync-1',
   devices: [{ id: 'self', name: '本机', role: 'self', model: 'Qwen', memUsage: 10, modelRequests: 0, capabilities: ['text'] }]
 };
 assert(validMessage(sync));
 assert(validMessage({ ...sync, devices: [{ id: 'temporary-link', deviceUid: 'stable-install', role: 'compute', capabilities: [] }] }));
 assert(!validMessage({ ...sync, devices: [{ id: 'temporary-link', deviceUid: 'x'.repeat(65), role: 'compute', capabilities: [] }] }));
-assert(!validMessage({ ...sync, devices: [{ id: 'worker', role: 'compute' }] }), 'roster entries must declare capabilities');
+// 未声明能力的老对端（v1）必须仍然合法：缺省 = 纯文本，路由侧 fail closed。
+assert(validMessage({ ...sync, devices: [{ id: 'worker', role: 'compute' }] }), 'undeclared capabilities mean text-only');
 assert(!validMessage({ ...sync, devices: null }));
 assert(validMessage({
-  protocol: 'nearby-chat-v2', type: 'request', requestId: 'r',
+  protocol: 'nearby-chat-v1', type: 'request', requestId: 'r',
   messages: [{ role: 'user', content: 'hi' }], needs: [], sched: true
 }));
 assert(!validMessage({
-  protocol: 'nearby-chat-v2', type: 'request', requestId: 'r',
+  protocol: 'nearby-chat-v1', type: 'request', requestId: 'r',
   messages: [{ role: 'user', content: 'hi' }], sched: 'yes'
 }));
-assert(!validMessage({
-  protocol: 'nearby-chat-v2', type: 'request', requestId: 'r',
+// 老对端（v1）的 request 不带 needs 也必须合法；带图请求仍必须显式声明 vision（见下）。
+assert(validMessage({
+  protocol: 'nearby-chat-v1', type: 'request', requestId: 'r',
   messages: [{ role: 'user', content: 'hi' }]
-}), 'needs is required on request');
+}), 'a request without needs stays valid');
+// 协议号仍是精确匹配：外来版本一律拒收（这正是不能贸然升到 v2 的原因）。
+assert(!validMessage({
+  protocol: 'nearby-chat-v9', type: 'request', requestId: 'r',
+  messages: [{ role: 'user', content: 'hi' }], needs: []
+}), 'a foreign protocol version is rejected');
 assert(validMessage({ ...request, needs: ['vision'] }));
 assert(!validMessage({ ...request, needs: ['fly'] }));
 assert(!validMessage({ ...request, needs: Array(5).fill('vision') }));
@@ -150,18 +157,18 @@ assert(validMessage(withImage));
   assert.equal(decoded.image, withImage.image, 'image survives out-of-order fragment assembly');
   assert.equal(decoded.needs.join(','), 'vision');
 }
-assert(validMessage({ protocol: 'nearby-chat-v2', type: 'done', requestId: 'r', source: '来自本机 Qwen' }));
-assert(!validMessage({ protocol: 'nearby-chat-v2', type: 'done', requestId: 'r', source: 'x'.repeat(257) }));
+assert(validMessage({ protocol: 'nearby-chat-v1', type: 'done', requestId: 'r', source: '来自本机 Qwen' }));
+assert(!validMessage({ protocol: 'nearby-chat-v1', type: 'done', requestId: 'r', source: 'x'.repeat(257) }));
 console.log('PASS: UTF-8 roundtrip, <1KiB envelopes, out-of-order/replay, conflicting duplicates/counts, schema/base64/byte/count/pending limits, incomplete-only timeout, clear, malformed UTF-8, deviceInfo/sched/source, image payload');
 for (const type of ['prepare', 'prepared']) {
-  const message = { protocol: 'nearby-chat-v2', type, requestId: 'prepare-1' };
+  const message = { protocol: 'nearby-chat-v1', type, requestId: 'prepare-1' };
   assert(validMessage(message));
   for (const requestId of [undefined, '', 1, 'x'.repeat(129)]) {
     assert(!validMessage({ ...message, requestId }));
   }
   assert.equal(new MessageAssembler().receive(encodeMessage(message, type)[0]).type, type);
 }
-const prepared = { protocol: 'nearby-chat-v2', type: 'prepared', requestId: 'r' };
+const prepared = { protocol: 'nearby-chat-v1', type: 'prepared', requestId: 'r' };
 assert(validMessage({ ...prepared, error: 'x'.repeat(2048) }));
 for (const error of [null, 1, {}, 'x'.repeat(2049)]) assert(!validMessage({ ...prepared, error }));
 console.log('PASS: prepare/prepared schema and roundtrip, required bounded requestId, optional bounded error');
