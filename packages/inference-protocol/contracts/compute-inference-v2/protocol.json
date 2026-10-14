@@ -5,6 +5,7 @@
   "promptFormat": "loop-react-split-v1",
   "limits": {
     "maxPromptBytes": 32768,
+    "maxImageBase64": 24000,
     "maxWireBytes": 65536,
     "maxDeltaBytes": 1024,
     "maxOutputBytes": 32768,

@@ -1,0 +1,15 @@
+{
+  "protocol": "nearby-chat-v1",
+  "type": "infer.request",
+  "version": 2,
+  "clientInstanceId": "boot-7f",
+  "agentRunId": "run-5d",
+  "requestId": "req-92",
+  "modelId": "qwen25-7b-instruct-q4",
+  "modelRevision": "conservative-2048",
+  "promptFormat": "loop-react-split-v1",
+  "prompt": "You are Loop.\nUser task:\n（附图）请描述这张图片。\n",
+  "maxOutputTokens": 512,
+  "deadlineBudgetMs": 180000,
+  "image": "/9j/4AAQSkZJRg=="
+}

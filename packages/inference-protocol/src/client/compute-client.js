@@ -97,7 +97,7 @@ class ComputeClient {
     this.transport.send(wireMessage('infer.capabilities.get', { requestId: requestId }));
   }
 
-  async infer(prompt, control) {
+  async infer(prompt, control, image) {
     if (!this.isReady()) throw new ComputeError(this.state === 'INCOMPATIBLE' ? 'PROTOCOL_UNSUPPORTED' : 'NO_COMPUTE');
     if (control && !control.checkpoint('before-model')) throw new ComputeError(control.reason || 'CANCELLED');
     const redacted = redactPrompt(prompt);
@@ -119,6 +119,9 @@ class ComputeClient {
       maxOutputTokens: maxOutputTokens,
       deadlineBudgetMs: LIMITS.hardInferenceMs
     });
+    // 可选附图：裸 base64（无 data: 前缀）。只在确有图片时挂字段 ——
+    // 值为 undefined 也会成为键，会被对端 hasOnly 判为未知字段而拒收。
+    if (typeof image === 'string' && image.length > 0) message.image = image;
     const checked = validateInferMessage(message);
     if (!checked.ok) throw new ComputeError(checked.code);
     const pending = this.openPending(requestId, epoch, generation, control);

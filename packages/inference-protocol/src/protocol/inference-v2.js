@@ -1,12 +1,13 @@
 'use strict';
 
-const { utf8ByteLength, sha256Text } = require('./text');
+const { utf8ByteLength, sha256Text, encodeBase64, decodeBase64 } = require('./text');
 
 const PROTOCOL = 'nearby-chat-v1';
 const INFERENCE_VERSION = 2;
 const LIMITS = {
   maxIdLength: 128,
   maxPromptBytes: 32768,
+  maxImageBase64: 24000,
   maxWireBytes: 65536,
   maxDeltaBytes: 1024,
   maxOutputBytes: 32768,
@@ -197,7 +198,7 @@ function validateInferMessage(message) {
     if (!hasOnly(message, [
       'protocol', 'type', 'version', 'clientInstanceId', 'agentRunId', 'requestId',
       'modelId', 'modelRevision', 'promptFormat', 'prompt', 'maxOutputTokens',
-      'deadlineBudgetMs', 'sched', 'origin'
+      'deadlineBudgetMs', 'sched', 'origin', 'image'
     ])) return reject('REJECTED');
     if (message.version !== INFERENCE_VERSION) return reject('PROTOCOL_UNSUPPORTED');
     if (!requireFields(message, [
@@ -208,6 +209,19 @@ function validateInferMessage(message) {
       !isId(message.modelRevision) || !isId(message.promptFormat)) return reject('REJECTED');
     if (typeof message.prompt !== 'string') return reject('REJECTED');
     if (utf8ByteLength(message.prompt) > LIMITS.maxPromptBytes) return reject('PAYLOAD_TOO_LARGE');
+    // 可选图片：裸 base64（无 data: 前缀、无空白），长度上限与算力端 ChatProtocol.MAX_IMAGE_BASE64 一致。
+    // 解码后重新编码必须完全一致：可同时挡掉 data URL 前缀、空白与非规范补位。
+    // 注意 decodeBase64 对非法输入返回 null，而 encodeBase64(null) 会抛错，故必须先判 null。
+    if (message.image !== undefined) {
+      if (typeof message.image !== 'string') return reject('REJECTED');
+      if (message.image.length === 0 || message.image.length > LIMITS.maxImageBase64) {
+        return reject('PAYLOAD_TOO_LARGE');
+      }
+      const imageBytes = decodeBase64(message.image);
+      if (imageBytes === null || imageBytes.length === 0 || encodeBase64(imageBytes) !== message.image) {
+        return reject('REJECTED');
+      }
+    }
     if (!isBoundedInt(message.maxOutputTokens, 1, 131072)) return reject('REJECTED');
     if (!isBoundedInt(message.deadlineBudgetMs, 1, LIMITS.hardInferenceMs)) return reject('REJECTED');
     if (message.sched !== undefined && message.sched !== true && message.sched !== false) return reject('REJECTED');

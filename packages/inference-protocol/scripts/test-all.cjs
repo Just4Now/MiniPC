@@ -156,11 +156,15 @@ async function main() {
     assert.equal(spec.version, 2);
     const hello = JSON.parse(fs.readFileSync(path.join(root, 'contracts/compute-inference-v2/fixtures/hello-v2.json'), 'utf8'));
     const sample = JSON.parse(fs.readFileSync(path.join(root, 'contracts/compute-inference-v2/fixtures/infer-request.json'), 'utf8'));
+    const sampleImage = JSON.parse(
+      fs.readFileSync(path.join(root, 'contracts/compute-inference-v2/fixtures/infer-request-image.json'), 'utf8'));
     assert.equal(validateHelloExtensions(hello).ok, true);
     assert.equal(supportsInferenceV2(hello), true);
     assert.equal(validateInferMessage(sample).ok, true);
+    assert.equal(validateInferMessage(sampleImage).ok, true);
     assert.equal(spec.limits.maxWireBytes, 65536);
     assert.equal(spec.limits.maxPromptBytes, 32768);
+    assert.equal(spec.limits.maxImageBase64, 24000);
   });
 
   await test('inference messages reject bad fields and keep v1 prompts off this path', () => {
@@ -171,6 +175,21 @@ async function main() {
     assert.equal(validateInferMessage(request({ maxOutputTokens: Number.NaN })).ok, false);
     assert.equal(validateInferMessage(request({ extra: true })).ok, false);
     assert.equal(validateInferMessage(request({ prompt: 'x'.repeat(32769) })).code, 'PAYLOAD_TOO_LARGE');
+    // 可选附图：裸 base64，规范编码且不超限才通过。
+    const IMAGE_B64 = '/9j/4AAQSkZJRg==';
+    assert.equal(validateInferMessage(request({ image: IMAGE_B64 })).ok, true);
+    assert.equal(validateInferMessage(request({ image: '' })).ok, false);
+    assert.equal(validateInferMessage(request({ image: 12345 })).ok, false);
+    assert.equal(validateInferMessage(request({ image: 'not*base64' })).ok, false);
+    assert.equal(validateInferMessage(request({ image: 'data:image/jpeg;base64,' + IMAGE_B64 })).ok, false);
+    assert.equal(validateInferMessage(request({ image: IMAGE_B64.slice(0, 4) + '\n' + IMAGE_B64.slice(4) })).ok, false);
+    assert.equal(validateInferMessage(request({ image: 'A'.repeat(24001) })).code, 'PAYLOAD_TOO_LARGE');
+    // 上限组合必须仍装得进一条报文：32768(prompt) + 24000(image) + 字段开销 ≈ 57 KB < 65536。
+    // 这条断言把"带图时无需裁剪 prompt"钉住 —— 若将来调高任一上限，这里会先失败。
+    assert.equal(
+      validateInferMessage(request({ prompt: 'y'.repeat(32768), image: 'A'.repeat(24000) })).ok, true);
+    // 不带 image 的请求保持与旧实现完全一致（纯文本路径不受影响）
+    assert.equal(validateInferMessage(request({})).ok, true);
     assert.equal(validateHelloExtensions({ inferenceVersions: [2, 1.5] }).ok, false);
     assert.equal(validateHelloExtensions({}).ok, true);
     const done = wireMessage('infer.done', {
