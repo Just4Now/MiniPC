@@ -1,3 +1,5 @@
+import { TaskGroupView } from './TaskBoard';
+
 export interface PageEvent {
   kind: string;
   text: string;
@@ -11,6 +13,7 @@ export interface PageEvent {
   selfLabel?: string;
   devices?: DeviceView[];
   jobs?: JobView[];
+  groups?: TaskGroupView[];
 }
 
 export interface DeviceView {
@@ -29,6 +32,9 @@ export interface DeviceView {
 }
 
 export interface JobView {
+  input?: string;
+  groupKey?: string;
+  subtaskId?: string;
   id: string;
   /** Stable board identity: origin epoch + wire request id. Never sent on the wire. */
   key: string;
@@ -48,6 +54,9 @@ export interface JobView {
 }
 
 export interface ActiveJob {
+  input?: string;
+  taskId?: string;
+  subtaskId?: string;
   id: string;
   /** Stable board identity: origin epoch + wire request id. Never sent on the wire. */
   key: string;

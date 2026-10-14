@@ -493,6 +493,20 @@ test('completed utility reads terminate repeated plans with real values', async 
   const r=await run(task,[actions,'Final: 北京天气14.5°C，126和5000',actions],{calculator:'计算结果：126',unit_convert:'5 km = 5000 m'});
   assert.equal(r.calls.length,2); assert.equal(r.prompts.length,3); assert.match(r.final,/126/); assert.match(r.final,/5000/);assert.doesNotMatch(r.final,/天气|14\.5|失败|未完成/);
 });
+test('leading 根据 is not part of the weather city', () => {
+  const entries = core.buildTaskLedger('根据明天北京的天气情况，建议穿几件衣服').filter(e => e.tool === 'weather_search');
+  assert.deepEqual(entries.map(e => e.scope.entity), ['北京']);
+  core.bindResult(entries,{name:'weather_search',input:'{"query":"北京天气","context":"明天"}'},'success','北京明天11.6°C');
+  assert.equal(entries[0].status,'success');
+});
+test('repeated successful read with an unbound requirement stops instead of looping', async () => {
+  const repeat='Execution: serial\nAction: weather_search[{"query":"Beijing"}]';
+  const r=await run('北京天气',[repeat],{weather_search:'天气结果\n北京：阴，11.6°C 到 24.4°C'});
+  assert.equal(r.calls.length,1); assert.ok(r.prompts.length<=3,String(r.prompts.length));
+  assert.match(r.final,/11\.6°C/); assert.match(r.prompts[2],/already completed successfully/); assert.doesNotMatch(r.prompts[2],/NOT executed/);
+  const answered=await run('北京天气',[repeat,repeat,'Final: 北京阴，11.6°C 到 24.4°C，建议穿两件。'],{weather_search:'天气结果\n北京：阴，11.6°C 到 24.4°C'});
+  assert.equal(answered.calls.length,1); assert.equal(answered.final,'北京阴，11.6°C 到 24.4°C，建议穿两件。');
+});
 test('current task reminder is mandatory within the actual byte budget', () => {
   const tail='Control: 当前任务 😀 '+ '新'.repeat(20);
   const prompt=core.fitPrompt('TOOLS\nUser task: 新任务',['old'.repeat(300)],['Action: calculator[{}]\nObservation: 4'],280,s=>Buffer.byteLength(s),tail);

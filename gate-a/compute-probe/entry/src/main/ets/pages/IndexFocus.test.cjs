@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { transpile, transpileSource } = require('../../../../../../tests/harness.cjs');
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
-function loadEts(file) {
-  const box = { exports: {}, Error, Map, Math, Number, Date, Promise, JSON };
+function loadEts(file, requires = {}) {
+  const box = { exports: {}, Error, Map, Math, Number, Date, Promise, JSON, require: name => requires[name] || {} };
   vm.runInNewContext(transpile(file), box);
   return box.exports;
 }
@@ -62,6 +62,14 @@ function setup(isServer) {
       return loadEts(__dirname + '/../cluster/DeviceLabels.ets');
     }
     if (name === '../ui/ChatBridge') return loadEts(__dirname + '/../ui/ChatBridge.ets');
+    if (name === '../ui/InferencePresentation') return loadEts(__dirname + '/../ui/InferencePresentation.ets');
+    if (name === '../ui/TaskDisplayRelay') return loadEts(__dirname + '/../ui/TaskDisplayRelay.ets');
+    if (name === '../ui/InferenceTaskObserver') return loadEts(__dirname + '/../ui/InferenceTaskObserver.ets', {
+      './InferencePresentation': loadEts(__dirname + '/../ui/InferencePresentation.ets')
+    });
+    if (name === '../ui/TaskBoard') return loadEts(__dirname + '/../ui/TaskBoard.ets', {
+      '../protocol/ChatProtocol': loadEts(__dirname + '/../protocol/ChatProtocol.ets')
+    });
     if (name === '../ui/CollaborationScreen') return loadEts(__dirname + '/../ui/CollaborationScreen.ets');
     if (name === '../cluster/DeviceInfo') return {
       DEVICE_INFO_POLL_MS: 2000,
@@ -192,6 +200,11 @@ function setup(isServer) {
   });
   assert.equal(elements.title.textContent, '算力设备2');
   assert(elements.devices.innerHTML.includes('算力设备2'));
+  const localAt = elements.devices.innerHTML.indexOf('class="tag local">本机');
+  const statusAt = elements.devices.innerHTML.indexOf('>推理中<');
+  assert(localAt > elements.devices.innerHTML.indexOf('算力设备2') && statusAt > localAt,
+    '本机 is a chip between the device name and the status');
+  assert.equal(elements.devices.innerHTML.split('tag local').length - 1, 1, 'only this device is marked 本机');
   assert(elements.devices.innerHTML.includes('推理 2'), 'compute card shows running job count');
   window.onNativeEvent({
     kind: 'dashboard', running: 1, jobs: [], selfLabel: '算力设备1',
@@ -216,9 +229,9 @@ function setup(isServer) {
   // A streaming reply patches its own card immediately, instead of waiting up to five
   // seconds for the next dashboard poll.
   window.onNativeEvent({ kind: 'text', requestId: 'time-1', text: '流式第一段' });
-  assert(elements.history.innerHTML.includes('流式第一段'), 'streaming text reaches its card at once');
+  assert(!elements.history.innerHTML.includes('流式第一段'), 'model output stays in details rather than the task list');
   window.onNativeEvent({ kind: 'done', requestId: 'time-1', text: '流式完成', error: false });
-  assert(elements.history.innerHTML.includes('流式完成'), 'the final text replaces the partial one');
+  assert(!elements.history.innerHTML.includes('流式完成'), 'final output stays in details');
   assert(!elements.history.innerHTML.includes('进行中'), 'the card leaves the running state');
   window.onNativeEvent({ kind: 'text', requestId: 'not-on-the-board', text: '无关文本' });
   assert(!elements.history.innerHTML.includes('无关文本'), 'an event for an unknown job patches nothing');
@@ -517,4 +530,115 @@ function setup(isServer) {
   const status = t.events.filter(e => e.kind === 'connection').at(-1);
   assert(status.text.includes('等待它自动重连'), 'a lost chat link says who has to re-dial: ' + status.text);
   console.log('PASS: status push defers to inference; a lost chat link is reported as the chat side\'s to re-dial');
+}
+
+// Native display integration: parent ownership is distinct from actual child worker.
+{
+  const s=setup(true);
+  s.channel.peerInfos=()=>[{epoch:7,peerId:'chat2',role:'chat',ready:true,name:'聊天设备2'},{epoch:8,peerId:'compute2',role:'compute',ready:true,name:'算力设备2'}];
+  const task={id:'display_parent',title:'原始任务',phase:'running',revision:1,startedAt:1000,endedAt:0,answer:'',subtasks:[
+    {id:'s1',title:'本机子任务',device:'算力设备1',phase:'running',detail:'生成中'},
+    {id:'s2',title:'远端子任务',device:'算力设备2',phase:'running',detail:'生成中'}]};
+  s.page.receiveInference({type:'infer.task',requestId:task.id,task},7);
+  let board=s.events.filter(e=>e.kind==='dashboard').at(-1);
+  assert.equal(board.groups[0].executor,'算力设备1');assert.equal(board.groups[0].origin,'聊天设备2');
+  s.page.receiveInference({type:'infer.task',requestId:task.id,task:{...task,revision:2,title:'不可信的算力端主任务'}},8);
+  assert.equal(s.page.taskBoard.views()[0].title,'原始任务','compute peer cannot impersonate chat owner');
+  s.page.inference={handle(message,epoch){s.page.showInferTask(message.requestId,epoch,message.prompt,message.label||'')}};
+  s.page.receiveInference({type:'infer.request',requestId:'child-call',prompt:'子任务输入',taskId:task.id,subtaskId:'s1'},7);
+  board=s.events.filter(e=>e.kind==='dashboard').at(-1);
+  assert.equal(board.jobs[0].groupKey,'7:display_parent');assert.equal(board.jobs[0].subtaskId,'s1');assert.equal(board.jobs[0].origin,'聊天设备2');
+  s.page.clearFinishedJobs();assert.equal(s.page.taskBoard.views().length,1,'clearing history preserves running parent');
+  s.page.taskBoard.disconnect(7);s.page.clearFinishedJobs();assert.equal(s.page.taskBoard.views().length,0);
+  const worker=setup(true);worker.channel.selfComputeNumber=()=>2;worker.channel.selfLabel=()=> '算力设备2';
+  worker.channel.peerInfos=()=>[{epoch:8,peerId:'hub',role:'compute',ready:true,name:'算力设备1'}];
+  worker.page.inference={handle(message,epoch){worker.page.showInferTask(message.requestId,epoch,message.prompt,message.label||'')}};
+  worker.page.receiveInference({type:'infer.request',requestId:'forwarded',prompt:'远端输入',taskId:task.id,subtaskId:'s2',origin:'聊天设备2'},8);
+  assert.equal(worker.page.jobs[0].origin,'聊天设备2');assert.equal(worker.page.jobs[0].source,'算力设备2');
+  console.log('PASS: native group ownership, chat role checks, request correlation, history cleanup and forwarded origin');
+}
+
+// Replay a purpose-labelled split using an unchanged chat client (no infer.task messages).
+{
+  const s=setup(true);
+  s.channel.peerInfos=()=>[{epoch:7,peerId:'chat2',role:'chat',ready:true,name:'聊天设备2'},{epoch:8,peerId:'compute2',role:'compute',ready:true,name:'算力设备2'}];
+  s.page.inference={handle(message,epoch){s.page.showInferTask(message.requestId,epoch,message.prompt||message.messages.at(-1).content,message.label||'')}};
+  const request=(id,prompt,label)=>s.page.receiveInference({type:'infer.request',requestId:id,prompt,label},7);
+  request('plan','拆分提示词\n用户请求：\n比较两个模型','任务拆分');
+  assert.equal(s.events.filter(e=>e.kind==='dashboard').at(-1).groups.length,0);
+  s.page.finishInferTask('plan',7,JSON.stringify([{title:'模型A',task:'介绍模型A'},{title:'模型B',task:'介绍模型B'}]),false);
+  request('a','PRIVATE_PROMPT\nUser task:\n介绍模型A\nControl: PRIVATE_CONTROL','子任务 1/2');
+  s.page.showRelayTask('b',7,8,[{role:'user',content:'User task:\n介绍模型B\nControl: private'}],'子任务 2/2');
+  let board=s.events.filter(e=>e.kind==='dashboard').at(-1);
+  assert.equal(board.groups.length,1);assert.equal(board.groups[0].executor,'算力设备1');
+  assert.equal(board.groups[0].subtasks[1].device,'算力设备2');
+  assert(!board.jobs.find(j=>j.id==='a').question.includes('PRIVATE_'));assert(board.jobs.find(j=>j.id==='a').input.includes('PRIVATE_CONTROL'));
+  const html=fs.readFileSync(__dirname+'/../../resources/rawfile/peer-chat.html','utf8');
+  const elements={};const element=()=>({handlers:{},value:'',style:{},textContent:'',innerHTML:'',scrollTop:50,classList:{add(){},remove(){}},addEventListener(t,f){this.handlers[t]=f},setAttribute(){}});
+  for(const match of html.matchAll(/\bid="([^"]+)"/g))elements[match[1]]=element();
+  const document={getElementById:id=>elements[id],createElement:element,addEventListener(){},activeElement:null};
+  const window={chatBridge:{prepare(){},connect(){},pickImage(){},clear(){}}};
+  vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)[1],{document,window,Date});
+  window.onNativeEvent(board);
+  assert(elements.history.innerHTML.includes('比较两个模型'));assert(elements.history.innerHTML.includes('模型A'));assert(elements.history.innerHTML.includes('模型B'));assert(elements.history.innerHTML.includes('算力设备2'));
+  assert(!elements.history.innerHTML.includes('PRIVATE_'));
+  s.page.finishInferTask('a',7,'A推理返回',false);s.page.completeJob('b',7,'B推理返回',false);
+  request('merge','用户请求：\n比较两个模型\n\n【子任务1：模型A｜已完成】\nA返回结果\n\n【子任务2：模型B｜已完成】\nB返回结果','合并结果');
+  s.page.finishInferTask('merge',7,'汇总回答',false);
+  board=s.events.filter(e=>e.kind==='dashboard').at(-1);
+  assert.equal(board.groups[0].phase,'done');assert.equal(board.groups[0].answer,'汇总回答');
+  window.onNativeEvent(board);assert(elements.history.innerHTML.includes('子任务 2/2'));
+  s.page.clearFinishedJobs();assert.equal(s.events.filter(e=>e.kind==='dashboard').at(-1).groups.length,0);
+  console.log('PASS: unchanged chat request replay -> native split observation -> real HTML grouping and result return, full input isolated from list');
+}
+
+// The screenshot on compute 2 exposed this gap: legacy calls had neither a
+// parent snapshot nor stable child identity after being handed to the worker.
+{
+  const hub=setup(true), worker=setup(true), forwarded=[];
+  hub.channel.peerInfos=()=>[{epoch:7,peerId:'chat2',role:'chat',ready:true,name:'聊天设备2'},{epoch:9,peerId:'chat3',role:'chat',ready:true,name:'聊天设备3'},
+    {epoch:8,peerId:'worker2',role:'compute',ready:true,name:'算力设备2'}];
+  worker.channel.selfComputeNumber=()=>2;worker.channel.selfLabel=()=> '算力设备2';
+  worker.channel.peerInfos=()=>[{epoch:11,peerId:'hub1',role:'compute',ready:true,name:'算力设备1'},
+    {epoch:12,peerId:'worker3',role:'compute',ready:true,name:'算力设备3'}];
+  hub.channel.send=async(message,epoch)=>{forwarded.push(JSON.parse(JSON.stringify(message)));
+    if(epoch===8&&message.type==='infer.task')worker.page.receiveInference(JSON.parse(JSON.stringify(message)),11);return true;};
+  worker.page.inference={handle(message,epoch){worker.page.showInferTask(message.requestId,epoch,message.prompt,message.label||'')}};
+  hub.page.inference={handle(message,epoch){hub.page.showInferTask(message.requestId,epoch,message.prompt,message.label||'')}};
+  hub.page.receiveInference({type:'infer.request',requestId:'legacy-plan',prompt:'用户请求：\n分别查询车票和天气',label:'任务拆分'},7);
+  hub.page.finishInferTask('legacy-plan',7,JSON.stringify([{title:'车票查询',task:'查询深圳到北京的车票'},
+    {title:'天气查询',task:'查询北京天气'}]),false);
+  const invoke=(id)=>{
+    hub.page.showRelayTask(id,7,8,[{role:'user',content:'User task:\n查询北京天气\nControl: PRIVATE_CONTROLLER'}],'子任务 2/2');
+    const message={type:'infer.request',requestId:'forward_'+id,prompt:'User task:\n查询北京天气\nControl: PRIVATE_CONTROLLER',label:'子任务 2/2',origin:'聊天设备2'};
+    hub.page.forwardTaskDisplay(id,7,8,message);
+    worker.page.receiveInference(message,11);
+    return message;
+  };
+  const first=invoke('weather1');
+  worker.page.finishInferTask(first.requestId,11,'Action: search',false);hub.page.completeJob('weather1',7,'Action: search',false);
+  const second=invoke('weather2');
+  assert.equal(first.taskId,second.taskId,'legacy rounds receive the same worker parent identity');
+  assert.equal(first.subtaskId,'s2');assert.equal(second.subtaskId,'s2');
+  const board=worker.events.filter(e=>e.kind==='dashboard').at(-1);
+  assert.equal(board.groups.length,1);assert.equal(board.groups[0].executor,'算力设备1');
+  assert.equal(board.groups[0].origin,'聊天设备2');assert.equal(board.jobs.length,2);
+  assert(board.jobs.every(j=>j.groupKey===board.groups[0].key));
+  const html=fs.readFileSync(__dirname+'/../../resources/rawfile/peer-chat.html','utf8');
+  const elements={};const element=()=>({handlers:{},value:'',style:{},textContent:'',innerHTML:'',scrollTop:50,classList:{add(){},remove(){}},addEventListener(t,f){this.handlers[t]=f},setAttribute(){}});
+  for(const match of html.matchAll(/\bid="([^"]+)"/g))elements[match[1]]=element();
+  const document={getElementById:id=>elements[id],createElement:element,addEventListener(){},activeElement:null};
+  const window={chatBridge:{prepare(){},connect(){},pickImage(){},clear(){}}};
+  vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)[1],{document,window,Date});
+  window.onNativeEvent(board);
+  assert(elements.history.innerHTML.includes('分别查询车票和天气'));
+  assert(elements.history.innerHTML.includes('class="task-children"'));
+  assert.equal((elements.history.innerHTML.match(/data-child="s2"/g)||[]).length,1);
+  assert(!elements.history.innerHTML.includes('车票查询'),'a worker only lists its own child assignments');
+  assert(!elements.history.innerHTML.includes('data-detail="'),'individual calls do not become duplicate task rows');
+  assert(!elements.history.innerHTML.includes('PRIVATE_CONTROLLER'));
+  assert(elements.history.innerHTML.includes('group-progress'));
+  const untrusted={type:'infer.task',requestId:'fake',task:{...board.groups[0],id:'fake',title:'其他算力伪装的结构'},origin:'聊天设备4'};
+  worker.page.receiveInference(untrusted,12);assert.equal(worker.page.taskBoard.views().length,1);
+  console.log('PASS: unchanged chat -> hub split -> worker snapshots and stable child IDs -> real worker HTML hierarchy, own assignments only');
 }

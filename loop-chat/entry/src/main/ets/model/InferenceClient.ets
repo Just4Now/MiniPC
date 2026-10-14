@@ -1,6 +1,6 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { nearbyChannel } from '../nearby/LinkEnhanceChannel';
-import { ChatMessage, ClusterInfo, InferProfile, WireMessage } from '../protocol/ChatProtocol';
+import { ChatMessage, ClusterInfo, InferProfile, TaskSnapshot, validTaskSnapshot, WireMessage } from '../protocol/ChatProtocol';
 import { sha256Hex, utf8Bytes } from './InferenceWire';
 import { repairUtf8FromSource } from './Utf8Repair';
 
@@ -29,7 +29,11 @@ export interface InferHooks {
   owner?: string;
   /** Caption shown on the compute device's task card (≤64 chars). */
   label?: string;
+  taskId?: string;
+  subtaskId?: string;
 }
+
+interface TaskDelivery { snapshot: TaskSnapshot; epoch: number; attempts: number; }
 
 /** Developer/user split of one ReAct prompt (loop-react-split-v1). */
 export interface InferSplit {
@@ -88,6 +92,46 @@ class InferenceClient {
   private loadListener: (() => void) | null = null;
   private status: string = '正在检查模型能力';
   private broken: boolean = false;
+  private taskEpochs: Map<string, number> = new Map();
+  private taskQueue: Map<string, TaskDelivery> = new Map();
+  private deliveringTasks: boolean = false;
+  private taskDeliveryGeneration: number = 0;
+
+  /** Bounded, coalesced display snapshots; never block or retry inference work. */
+  publishTask(snapshot: TaskSnapshot): void {
+    if (!validTaskSnapshot(snapshot) || !this.isReady() || this.profileEpoch < 0) return;
+    let epoch = this.taskEpochs.get(snapshot.id);
+    if (epoch === undefined) {
+      epoch = this.profileEpoch;
+      if (this.taskEpochs.size >= 64) this.taskEpochs.delete(Array.from(this.taskEpochs.keys())[0]);
+      this.taskEpochs.set(snapshot.id, epoch);
+    }
+    if (epoch !== this.profileEpoch) return;
+    this.taskQueue.set(snapshot.id, { snapshot: snapshot, epoch: epoch, attempts: 0 });
+    this.deliverTasks();
+  }
+
+  private async deliverTasks(): Promise<void> {
+    if (this.deliveringTasks) return;
+    this.deliveringTasks = true;
+    const generation = this.taskDeliveryGeneration;
+    try {
+      while (this.taskQueue.size > 0 && generation === this.taskDeliveryGeneration) {
+        const id = Array.from(this.taskQueue.keys())[0];
+        const delivery = this.taskQueue.get(id);
+        this.taskQueue.delete(id);
+        if (delivery === undefined || delivery.epoch !== this.profileEpoch) continue;
+        let sent = false;
+        try {
+          sent = await nearbyChannel.send({ type: 'infer.task', version: 2, requestId: id, task: delivery.snapshot }, delivery.epoch);
+        } catch (_error) { /* A display failure cannot fail a model request. */ }
+        if (!sent && generation === this.taskDeliveryGeneration && delivery.attempts === 0 && delivery.epoch === this.profileEpoch && !this.taskQueue.has(id)) {
+          delivery.attempts++;
+          this.taskQueue.set(id, delivery);
+        }
+      }
+    } finally { if (generation === this.taskDeliveryGeneration) this.deliveringTasks = false; }
+  }
 
   /** Notified after the inference link state changed (for status chrome only). */
   setLinkListener(listener: (() => void) | null): void {
@@ -152,6 +196,10 @@ class InferenceClient {
   }
 
   reset(): void {
+    this.taskQueue.clear();
+    this.taskDeliveryGeneration++;
+    this.deliveringTasks = false;
+    // Keep bounded epoch tombstones: a late cancelled run must not publish onto a new link.
     this.finishNegotiate(LINK_LOST);
     this.profile = null;
     this.profileEpoch = -1;
@@ -313,6 +361,10 @@ class InferenceClient {
     };
     if (state.hooks.label !== undefined && state.hooks.label.length > 0) {
       request.label = state.hooks.label.substring(0, 64);
+    }
+    if (state.hooks.taskId !== undefined && state.hooks.subtaskId !== undefined) {
+      request.taskId = state.hooks.taskId;
+      request.subtaskId = state.hooks.subtaskId;
     }
     if (state.messages !== undefined) {
       request.messages = state.messages;

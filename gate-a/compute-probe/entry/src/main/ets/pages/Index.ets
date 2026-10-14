@@ -20,6 +20,10 @@ import {
 import { chatLabel, computeLabel, hidePhoneName, publicLabel, workerTail } from '../cluster/DeviceLabels';
 import { ChatBridge } from '../ui/ChatBridge';
 import { ActiveJob, DeviceView, JobView, PageEvent } from '../ui/DashboardTypes';
+import { TaskBoard, TaskGroupView } from '../ui/TaskBoard';
+import { TaskDisplayRelay } from '../ui/TaskDisplayRelay';
+import { inferenceSummary } from '../ui/InferencePresentation';
+import { InferenceTaskObserver } from '../ui/InferenceTaskObserver';
 import { collaborationScreen } from '../ui/CollaborationScreen';
 
 interface RosterDelivery {
@@ -27,6 +31,8 @@ interface RosterDelivery {
   pending: boolean;
   lastFullAt: number;
 }
+
+interface TaskRequestLink { taskId?: string; subtaskId?: string; origin: string; input: string; }
 
 function sameName(left: string, right: string): boolean {
   return left.length > 0 && right.length > 0 &&
@@ -93,6 +99,11 @@ struct Index {
   private question: string = '';
   private jobs: ActiveJob[] = [];
   private finishedJobs: ActiveJob[] = [];
+  private taskBoard: TaskBoard = new TaskBoard();
+  private taskObserver: InferenceTaskObserver = new InferenceTaskObserver();
+  private taskDisplay: TaskDisplayRelay = new TaskDisplayRelay((message: WireMessage, epoch: number): Promise<boolean> =>
+    this.channel.send(message, epoch));
+  private taskLinks: Map<string, TaskRequestLink> = new Map();
   private history: ChatMessage[] = [];
   private pendingB: ChatMessage[] | null = null;
   private pendingBId: string = '';
@@ -130,6 +141,7 @@ struct Index {
         return this.channel.send(message, epoch);
       }, card);
       const host = this.inference;
+      host.setDeviceProvider((): string => this.selfComputeLabel());
       const events = new RelayEvents();
       events.begin = (requestId: string, chatEpoch: number, workerEpoch: number, messages: ChatMessage[], label: string): void => {
         this.showRelayTask(requestId, chatEpoch, workerEpoch, messages, label);
@@ -139,6 +151,9 @@ struct Index {
       };
       events.end = (requestId: string, chatEpoch: number, answer: string, failed: boolean): void => {
         this.completeJob(requestId, chatEpoch, answer.length > 0 ? answer : (failed ? '推理失败' : ''), failed);
+      };
+      events.forward = (requestId: string, chatEpoch: number, workerEpoch: number, request: WireMessage): void => {
+        this.forwardTaskDisplay(requestId, chatEpoch, workerEpoch, request);
       };
       this.relay = new InferenceRelay(this.router, (): PoolNode[] => this.poolNodes(), (): number[] => this.chatEpochs(),
         host, (message: WireMessage, epoch: number): Promise<boolean> => this.channel.send(message, epoch), events);
@@ -297,11 +312,15 @@ struct Index {
   private createJob(id: string, messages: ChatMessage[], peer: boolean, epoch: number, workerEpoch: number = 0,
     image: string = '', originLabel: string = '', routeMode: string = ''): ActiveJob {
     const peers = this.channel.peerInfos();
+    const link = this.taskLinks.get(Index.jobKey(epoch, id));
+    this.taskLinks.delete(Index.jobKey(epoch, id));
     return {
+      taskId: link?.taskId, subtaskId: link?.subtaskId,
+      input: link?.input,
       id: id, key: Index.jobKey(epoch, id), epoch: epoch, peer: peer, answer: '', question: messages[messages.length - 1].content,
       startedAt: Date.now(), firstAt: 0, endedAt: 0, error: false,
       source: computeLabel(workerEpoch, peers, this.selfComputeLabel()),
-      origin: originLabel.length > 0 ? this.forwardedOrigin(originLabel) : (peer ? chatLabel(epoch, peers) : '本机'),
+      origin: link !== undefined ? link.origin : (originLabel.length > 0 ? this.forwardedOrigin(originLabel) : (peer ? chatLabel(epoch, peers) : '本机')),
       workerEpoch: workerEpoch,
       image: peer ? '' : image,
       routeMode: routeMode
@@ -319,6 +338,8 @@ struct Index {
     const ended = job.endedAt > 0;
     const elapsed = (ended ? job.endedAt : now) - job.startedAt;
     return {
+      groupKey: job.taskId !== undefined ? Index.jobKey(job.epoch, job.taskId) : undefined, subtaskId: job.subtaskId,
+      input: job.input,
       id: job.id, key: job.key, source: job.source, origin: job.origin, local: !job.peer,
       image: job.image, question: job.question, answer: job.answer,
       chars: job.answer.length, startedAt: job.startedAt, firstAt: job.firstAt,
@@ -327,9 +348,31 @@ struct Index {
     };
   }
 
+  private taskViews(): TaskGroupView[] {
+    const groups = this.taskBoard.views();
+    for (const group of this.taskObserver.views()) if (!groups.some((item) => item.key === group.key)) groups.push(group);
+    return groups;
+  }
+
+  private publishWorkerTasks(groups: TaskGroupView[]): void {
+    if (!this.isComputeHub()) return;
+    this.taskDisplay.publish(groups, this.channel.peerInfos().filter((peer) => peer.ready && peer.role === 'compute')
+      .map((peer) => peer.epoch), this.jobs.concat(this.finishedJobs).filter((job) => job.taskId !== undefined)
+      .map((job) => Index.jobKey(job.epoch, job.taskId || '')));
+  }
+
+  private forwardTaskDisplay(requestId: string, chatEpoch: number, workerEpoch: number, request: WireMessage): void {
+    const job = this.findJob(requestId, chatEpoch);
+    if (job?.taskId === undefined || job.subtaskId === undefined) return;
+    this.taskDisplay.bind(Index.jobKey(chatEpoch, job.taskId), job.subtaskId, request, workerEpoch);
+    this.publishWorkerTasks(this.taskViews());
+  }
+
   private emitDashboard(): void {
     this.channel.setActiveJobs(this.jobs.length);
     collaborationScreen.setWanted(IS_SERVER && this.pageReady && (this.channel.isListening() || this.jobs.length > 0));
+    const groups = this.taskViews();
+    if (IS_SERVER) this.publishWorkerTasks(groups);
     if (!IS_SERVER || !this.pageReady) return;
     const runningNow = this.jobs.filter((job: ActiveJob) => job.workerEpoch === 0).length;
     // Same rule as the roster in pollDeviceInfo(): background telemetry yields to
@@ -435,7 +478,8 @@ struct Index {
       running: localRunning,
       selfLabel: this.selfComputeLabel(),
       devices: devices,
-      jobs: views
+      jobs: views,
+      groups: groups
     });
   }
 
@@ -460,6 +504,8 @@ struct Index {
       const dropped = !this.channel.hasEpoch(epoch);
       // Inference jobs are keyed by wire requestId inside InferenceHost, not by the board key.
       if (dropped) {
+        this.taskBoard.disconnect(epoch);
+        this.taskObserver.disconnect(epoch);
         this.inference?.peerDropped(epoch);
         // Relay first: it owns the infer.* hand-offs that cancelDroppedPeers must not treat as chat requests.
         this.relay?.chatDropped(epoch);
@@ -706,11 +752,7 @@ struct Index {
 
   /** Card text is the Loop user task; the model still receives the full prompt. */
   private inferQuestion(prompt: string, label: string = ''): string {
-    const marker = 'User task:\n';
-    const at = prompt.lastIndexOf(marker);
-    const text = (at >= 0 ? prompt.substring(at + marker.length) : prompt).trim();
-    const body = text.length > 0 ? text : '（空任务）';
-    return label.length > 0 ? '【' + label + '】' + body : body;
+    return inferenceSummary(prompt, label);
   }
 
   private showInferTask(requestId: string, epoch: number, prompt: string, label: string): void {
@@ -718,6 +760,8 @@ struct Index {
     if (this.webActiveId.length === 0) this.webActiveId = requestId;
     this.router.beginSelf();
     const job = this.createJob(requestId, [{ role: 'user', content: question }], true, epoch);
+    if (job.input === undefined) job.input = prompt;
+    if (this.isComputeHub()) this.taskObserver.begin(job, label, this.selfComputeLabel());
     this.jobs.push(job);
     hilog.info(0, 'NearbyChat', 'infer card request=%{public}s jobs=%{public}d', requestId, this.jobs.length);
     this.emit({ kind: 'remote-start', text: question, requestId: requestId });
@@ -749,6 +793,8 @@ struct Index {
     const question = this.inferQuestion(messages[messages.length - 1].content, label);
     if (this.webActiveId.length === 0) this.webActiveId = requestId;
     const job = this.createJob(requestId, [{ role: 'user', content: question }], true, chatEpoch, workerEpoch);
+    if (job.input === undefined) job.input = messages.map((item: ChatMessage): string => '[' + item.role + ']\n' + item.content).join('\n\n');
+    if (this.isComputeHub()) this.taskObserver.begin(job, label, this.selfComputeLabel());
     this.jobs.push(job);
     this.emit({ kind: 'remote-start', text: question, requestId: requestId });
     this.emitDashboard();
@@ -804,6 +850,28 @@ struct Index {
   }
 
   private receiveInference(message: WireMessage, epoch: number): void {
+    if (message.type === 'infer.task') {
+      const peer = this.channel.peerInfos().find((item) => item.epoch === epoch);
+      const fromChat = this.isComputeHub() && peer?.ready && peer.role === 'chat';
+      const fromHub = !this.isComputeHub() && peer?.ready && peer.role === 'compute' &&
+        computeLabel(epoch, this.channel.peerInfos()) === '算力设备1';
+      if ((fromChat || fromHub) && message.task !== undefined &&
+        this.taskBoard.accept(message.task, epoch, fromChat ? chatLabel(epoch, this.channel.peerInfos()) : this.forwardedOrigin(message.origin || ''),
+          fromChat ? this.selfComputeLabel() : computeLabel(epoch, this.channel.peerInfos()))) {
+        this.taskObserver.suppress(Index.jobKey(epoch, message.task.id));
+        this.emitDashboard();
+      }
+      return;
+    }
+    if (message.type === 'infer.request') {
+      const peer = this.channel.peerInfos().find((item) => item.epoch === epoch);
+      const origin = peer?.role === 'chat' ? chatLabel(epoch, this.channel.peerInfos()) : this.forwardedOrigin(message.origin || '');
+      message.origin = origin;
+      if (this.taskLinks.size >= 128) this.taskLinks.delete(Array.from(this.taskLinks.keys())[0]);
+      this.taskLinks.set(Index.jobKey(epoch, message.requestId || ''), {
+        taskId: message.taskId, subtaskId: message.subtaskId, origin: origin,
+        input: message.prompt !== undefined ? message.prompt : (message.messages || []).map((item: ChatMessage): string => '[' + item.role + ']\n' + item.content).join('\n\n') });
+    }
     if (message.type === 'infer.accepted' || message.type === 'infer.delta' ||
       message.type === 'infer.done' || message.type === 'infer.error') {
       // Output from a compute device that this hub handed a request to.
@@ -1242,6 +1310,7 @@ struct Index {
       job.endedAt = Date.now();
       job.error = error;
       if (text && job.answer.length === 0) job.answer = text;
+      this.taskObserver.end(job);
       this.jobs.splice(this.jobs.indexOf(job), 1);
       // A reused request id must not evict the earlier card with the same wire id.
       for (let i = this.finishedJobs.length - 1; i >= 0; i--) {
@@ -1267,6 +1336,8 @@ struct Index {
   /** Clears the finished-task list only; running tasks stay so their results still arrive. */
   private clearFinishedJobs(): void {
     this.finishedJobs = [];
+    this.taskBoard.clearFinished();
+    this.taskObserver.clearFinished();
     this.emitDashboard();
   }
 

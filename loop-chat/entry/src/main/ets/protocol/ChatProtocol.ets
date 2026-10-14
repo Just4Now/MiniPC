@@ -21,9 +21,36 @@ export interface DeviceInfoEntry {
   ready?: boolean;
   slot?: number;
 }
+export interface TaskChildSnapshot {
+  id: string;
+  title: string;
+  device: string;
+  phase: string;
+  detail: string;
+  result?: string;
+  resultTruncated?: boolean;
+  startedAt?: number;
+  endedAt?: number;
+}
+
+/** Display-only parent/child state; never used to authorize or schedule work. */
+export interface TaskSnapshot {
+  id: string;
+  title: string;
+  phase: string;
+  revision: number;
+  startedAt: number;
+  endedAt: number;
+  subtasks: TaskChildSnapshot[];
+  answer: string;
+}
+
 export interface WireMessage {
   protocol?: string;
   type: string;
+  taskId?: string;
+  subtaskId?: string;
+  task?: TaskSnapshot;
   requestId?: string;
   messages?: ChatMessage[];
   text?: string;
@@ -192,8 +219,41 @@ class PendingMessage {
   constructor(count: number) { this.count = count; }
 }
 
+export function validTaskSnapshot(task: TaskSnapshot): boolean {
+  if (task === null || typeof task !== 'object' || !/^[A-Za-z0-9_-]{1,64}$/.test(task.id) ||
+    typeof task.id !== 'string' || typeof task.title !== 'string' || task.title.length === 0 || task.title.length > 1000 ||
+    !['running', 'merging', 'done', 'partial', 'failed', 'cancelled'].includes(task.phase) ||
+    !Number.isSafeInteger(task.revision) || task.revision < 1 ||
+    !Number.isSafeInteger(task.startedAt) || task.startedAt < 1 || !Number.isSafeInteger(task.endedAt) || task.endedAt < 0 ||
+    typeof task.answer !== 'string' || task.answer.length > 4096 ||
+    !Array.isArray(task.subtasks) || task.subtasks.length < 2 || task.subtasks.length > 4) return false;
+  const terminal = ['done', 'partial', 'failed', 'cancelled'].includes(task.phase);
+  if (terminal ? task.endedAt < task.startedAt : task.endedAt !== 0) return false;
+  const ids: string[] = [];
+  for (const child of task.subtasks) {
+    if (child === null || typeof child !== 'object' || typeof child.id !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,64}$/.test(child.id) || ids.includes(child.id) ||
+      typeof child.title !== 'string' || child.title.length === 0 || child.title.length > 160 ||
+      typeof child.device !== 'string' || (child.device !== '' && !/^算力设备[1-9][0-9]*$/.test(child.device)) ||
+      !['queued', 'running', 'done', 'partial', 'failed', 'cancelled'].includes(child.phase) ||
+      typeof child.detail !== 'string' || child.detail.length > 256 ||
+      !validOptionalString(child.result, 2048) ||
+      (child.resultTruncated !== undefined && typeof child.resultTruncated !== 'boolean') ||
+      (child.startedAt !== undefined && (!Number.isSafeInteger(child.startedAt) || child.startedAt < 0)) ||
+      (child.endedAt !== undefined && (!Number.isSafeInteger(child.endedAt) || child.endedAt < 0))) return false;
+    ids.push(child.id);
+  }
+  return task.phase !== 'done' || task.subtasks.every((child: TaskChildSnapshot): boolean => child.phase === 'done');
+}
+
 function validInference(m: WireMessage): boolean {
   if (m.version !== undefined && m.version !== 2) return false;
+  if (!validOptionalString(m.origin, 64)) return false;
+  if ((m.taskId === undefined) !== (m.subtaskId === undefined)) return false;
+  if (m.taskId !== undefined && (typeof m.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(m.taskId) ||
+    typeof m.subtaskId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(m.subtaskId))) return false;
+  if (m.type === 'infer.task') return m.version === 2 && validTaskSnapshot(m.task as TaskSnapshot) && m.requestId === m.task?.id;
+  if (m.task !== undefined) return false;
   if (typeof m.requestId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(m.requestId)) return false;
   if (m.prompt !== undefined && (typeof m.prompt !== 'string' ||
     new util.TextEncoder().encodeInto(m.prompt).length > 32768)) return false;

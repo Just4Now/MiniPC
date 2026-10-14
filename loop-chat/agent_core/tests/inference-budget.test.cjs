@@ -9,6 +9,7 @@ const compiled = ts.transpileModule(source, {fileName: 'InferenceClient.ts', com
 assert.deepEqual((compiled.diagnostics || []).filter(d => d.category === ts.DiagnosticCategory.Error), []);
 const sent = [];
 const stubs = {
+  '../protocol/ChatProtocol': { validTaskSnapshot: () => true },
   '@kit.PerformanceAnalysisKit': {hilog: {info() {}, warn() {}}},
   '../nearby/LinkEnhanceChannel': {nearbyChannel: {send(m) {sent.push(m);}, inferenceReady() {return true;}, readyEpoch() {return 0;}}},
   './InferenceWire': {utf8Bytes: s => Buffer.from(s, 'utf8'), sha256Hex: () => ''},

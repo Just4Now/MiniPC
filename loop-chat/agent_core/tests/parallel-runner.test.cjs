@@ -58,8 +58,9 @@ function build(options = {}) {
     tools: {}, maxSteps: 4, maxPromptBytes: () => 32768,
     load: () => options.load || { idle: 2, total: 2 }
   };
-  const seen = { plan: null, updates: [], phases: [], events: [] };
+  const seen = { plan: null, updates: [], phases: [], events: [], tasks: [] };
   const observer = { onPlan: (views) => { seen.plan = JSON.parse(JSON.stringify(views)); }, onUpdate: (view) => seen.updates.push(JSON.parse(JSON.stringify(view))), onPhase: (text) => seen.phases.push(text) };
+  observer.onTask = task => { seen.tasks.push(JSON.parse(JSON.stringify(task))); if (options.telemetryFails) throw new Error('display unavailable'); };
   const runner = new parallel.ParallelTaskRunner(deps);
   const conversation = { toChatMessages: () => [] };
   const run = (task = TASK) => runner.tryRun(task, conversation, observer, (event) => seen.events.push(event));
@@ -152,6 +153,32 @@ test('stop while splitting reports the stop and never runs sub-tasks', async () 
   const run = h.run(); await new Promise((resolve) => setTimeout(resolve, 10));
   h.runner.requestStop(); finish(); assert.equal(await run, true);
   assert.equal(state.created.length, 0); assert.equal(h.seen.events.at(-1).text, '已停止生成'); void original;
+});
+test('snapshots preserve parent identity, actual worker, child results and final lifecycle', async () => {
+  reset(); const links=[];
+  const h=build({modelFor: (id,hooks)=>{links.push([id,hooks.taskId,hooks.subtaskId]);hooks.onAccepted(id==='s1'?'算力设备1':'算力设备2');}});
+  await h.run(); const tasks=h.seen.tasks;
+  assert.equal(new Set(tasks.map(t=>t.id)).size,1);
+  assert(tasks.every((t,i)=>i===0||t.revision>tasks[i-1].revision));
+  assert.equal(tasks[0].title,TASK); assert.equal(tasks[0].subtasks.length,2);
+  assert(tasks.some(t=>t.phase==='merging'&&t.endedAt===0));
+  assert.equal(tasks.at(-1).phase,'done'); assert(tasks.at(-1).endedAt>=tasks[0].startedAt);
+  assert(tasks.at(-1).subtasks.every(t=>t.phase==='done'&&t.result.length>0));
+  assert.deepEqual(tasks.at(-1).subtasks.map(t=>t.device),['算力设备1','算力设备2']);
+  assert(links.every(([id,taskId,childId])=>taskId===tasks[0].id&&id===childId));
+  assert.equal(tasks.at(-1).answer,'合并后的回答');
+  assert(tasks[0].subtasks.every(t=>t.phase==='queued'&&t.device===''),'snapshots are independent copies');
+});
+test('telemetry failure cannot prevent successful inference and partial state is explicit', async () => {
+  reset(); const h=build({telemetryFails:true,mergeFails:true}); await h.run();
+  assert.equal(h.seen.events.at(-1).kind,'FINAL'); assert.equal(h.seen.tasks.at(-1).phase,'partial');
+});
+test('cancelled snapshot is terminal and is not overwritten by late child updates', async () => {
+  reset(); state.script={'查询北京明天的天气':{hold(){}},'把“早上好”翻译成英文':{hold(){}}};
+  const h=build(); const pending=h.run(); await new Promise(resolve=>setTimeout(resolve,10));
+  h.runner.requestStop(); await pending;
+  const final=h.seen.tasks.at(-1); assert.equal(final.phase,'cancelled');
+  assert(final.subtasks.every(t=>t.phase==='cancelled')); assert(final.endedAt>0);
 });
 (async () => {
   let pass = 0;

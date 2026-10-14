@@ -29,6 +29,7 @@ function harness(initial, options = {}) {
   handlers.begin = (id, chat, worker) => events.push(['begin', id, chat, worker]);
   handlers.delta = (id, chat, text) => events.push(['delta', id, chat, text]);
   handlers.end = (id, chat, text, failed) => events.push(['end', id, chat, text, failed]);
+  if(options.forward)handlers.forward=options.forward;
   // Like Index.poolNodes(): a worker's in-flight count comes from the hub's own hand-off ledger.
   const snapshot = () => nodes.map((item) => item.isSelf ? item : Object.assign(item, { inflight: Math.max(item.sampled || 0, router.workerLoad(item.epoch, 0)) }));
   const relay = new InferenceRelay(router, snapshot, () => [5], { handle: (m, e) => localHandled.push([m.type, m.requestId, e]) },
@@ -57,6 +58,25 @@ test('idle hub runs the request itself', () => {
   h.relay.handleFromChat(request('r1'), 5);
   assert.deepEqual(h.localHandled, [['infer.request', 'r1', 5]]);
   assert.equal(h.to(7).length, 0);
+});
+test('forwarded child keeps display identity and original chat source', () => {
+  const h=harness([self({inflight:1}),worker()]);
+  h.relay.handleFromChat({...request('child'),taskId:'parent',subtaskId:'s2',origin:'聊天设备3'},5);
+  const forwarded=h.to(7,'infer.request')[0];
+  assert.equal(forwarded.taskId,'parent');assert.equal(forwarded.subtaskId,'s2');assert.equal(forwarded.origin,'聊天设备3');
+});
+
+test('legacy display context is attached after the card observer and before forwarding',()=>{
+  let observed=false;
+  const h=harness([self({inflight:1}),worker()],{forward:(id,chat,worker,copy)=>{
+    observed=h.events.some(event=>event[0]==='begin'&&event[1]===id);
+    copy.taskId='display_session_parent';copy.subtaskId='s2';
+  }});
+  const original={...request('legacy'),label:'子任务 2/2'};
+  h.relay.handleFromChat(original,5);
+  const copy=h.to(7,'infer.request')[0];
+  assert(observed);assert.equal(copy.taskId,'display_session_parent');assert.equal(copy.subtaskId,'s2');
+  assert.deepEqual(copy.messages,original.messages);assert.equal(original.taskId,undefined);
 });
 test('busy hub forwards to the idle worker with a hub forwardId and reduced budget', () => {
   const h = harness([self({ inflight: 1 }), worker()]);

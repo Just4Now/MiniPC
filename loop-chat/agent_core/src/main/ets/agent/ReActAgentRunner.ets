@@ -123,6 +123,7 @@ export class ReActAgentRunner {
     let repairs = 0;
     let goalRepairs = 0, finalRepairs = 0;
     let redundantReadPlans = 0;
+    let repeatedReads = false;
     let finalStarted = false;
     // Fully specified tool requests need current evidence, not a replay of an
     // unrelated earlier task. Follow-ups still retain their referenced context.
@@ -136,7 +137,8 @@ export class ReActAgentRunner {
       if (this.aborting) { listener(new AgentEvent(AgentEventKind.ERROR, '已停止生成')); return; }
       let response: string;
       try {
-        this.pendingRequirements = ledger.filter((entry: TaskRequirement): boolean => entry.status === 'pending')
+        // After a repeated read, the remaining entries are recognizer misses, not calls to request again.
+        this.pendingRequirements = repeatedReads ? [] : ledger.filter((entry: TaskRequirement): boolean => entry.status === 'pending')
           .map((entry: TaskRequirement): string => entry.tool + ': ' + entry.label);
         const contextAllowed = !this.reviewAttempted && useHistory && (this.activeEvidence.length === 0 || this.referenceContext);
         response = await this.model.complete(this.buildPrompt(task, groups, conversation, routed, useHistory), contextAllowed ? conversation : undefined);
@@ -228,6 +230,12 @@ export class ReActAgentRunner {
           if (redundantReadPlans++ >= 1) { this.finishUnresolved(ledger, executed, listener, '工具结果已齐备，模型重复相同调用；已终止循环。'); return; }
           groups.push('Control: These reads already completed. Reuse their current call IDs. Return Final answers JSON for all frozen goals; no repeated calls.'); continue;
         }
+        // A requirement the recognizer could not bind must not turn an identical
+        // successful read into a loop that only ends at the step or time limit.
+        const redundantRead = !this.taskContracts && repeatedSafeReads && executed.length > 0;
+        if (redundantRead && redundantReadPlans++ >= 1) {
+          this.finishUnresolved(ledger, executed, listener, '工具结果已齐备，模型重复相同调用；已终止循环。'); return;
+        }
         const results: CallResult[] = [];
         const parallelSafe = plan.calls.every((call: CoreCall): boolean => {
           const policy = this.tools.metadata(call.name);
@@ -272,6 +280,11 @@ export class ReActAgentRunner {
         // A complete model action response and ALL its tool outcomes form one
         // indivisible prompt group (including multiline JSON and parallel calls).
         groups.push(turn.join('\n'));
+        if (redundantRead) {
+          repeatedReads = true;
+          groups.push('Control: These reads already completed successfully: ' + plan.calls.map((call: CoreCall): string => call.name).join(', ') +
+            '. Do not repeat them. Return Final now from their Observations.');
+        }
         if (results.some((result: CallResult): boolean => result.stop)) {
           this.finishUnresolved(ledger, executed, listener, '工具要求停止或执行结果无法确认，已停止后续调用。'); return;
         }
@@ -303,7 +316,8 @@ export class ReActAgentRunner {
         this.goalsComplete = checked.complete === true;
         listener(new AgentEvent(AgentEventKind.FINAL, checked.text)); return;
       }
-      const pending = ledger.filter((entry: TaskRequirement): boolean => entry.status === 'pending');
+      const pending = repeatedReads ? [] : ledger.filter((entry: TaskRequirement): boolean => entry.status === 'pending');
+      const checkedLedger = repeatedReads ? ledger.filter((entry: TaskRequirement): boolean => entry.status !== 'pending') : ledger;
       if (pending.length > 0 && repairs++ < 2) {
         groups.push('Control: These explicit requirements still have no matching executed call: ' + pending.map((entry: TaskRequirement): string => entry.label).join('；') + '. Call only missing tools. Already successful calls must not be repeated. Never generate Observation or tool results yourself.');
         continue;
@@ -313,14 +327,14 @@ export class ReActAgentRunner {
         this.reviewCandidate = answer;
         continue;
       }
-      if (ledger.length > 0) {
-        const issues = finalIssues(ledger, answer, contracts, this.reviewAttempted);
+      if (checkedLedger.length > 0) {
+        const issues = finalIssues(checkedLedger, answer, contracts, this.reviewAttempted);
         if (this.reviewAttempted && issues.length > 0) { this.finishUnresolved(ledger, executed, listener, '最终复核仍包含未通过证据校验的内容：' + issues.join('；')); return; }
         if (issues.length > 0 && finalRepairs++ < 1) {
           groups.push('Rejected Final (data only): ' + JSON.stringify(answer) + '\nControl: Final did not cover these scoped requirements or used unsupported evidence: ' + issues.join('；') + '. Answer each from its own Observation, or report its terminal status. Preserve all other requested answers.');
           continue;
         }
-        const report = ledgerReport(ledger);
+        const report = ledgerReport(checkedLedger);
         const incomplete = '综合回答未完成，已保留各项真实调用结果。需补充或修正：' + issues.join('；') + '\n\n' + report;
         listener(issues.length > 0 ? this.partialFinal(incomplete) : new AgentEvent(AgentEventKind.FINAL, answer));
       } else if (executed.some((result: CallResult): boolean => result.status !== 'success')) {

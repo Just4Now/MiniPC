@@ -23,12 +23,30 @@ export interface SubtaskView {
   device: string;
   phase: SubtaskPhase;
   detail: string;
+  /** Final child result, bounded only in the display snapshot. */
+  result?: string;
+  resultTruncated?: boolean;
+  startedAt?: number;
+  endedAt?: number;
+}
+
+export interface ParallelTaskSnapshot {
+  id: string;
+  title: string;
+  phase: string;
+  revision: number;
+  startedAt: number;
+  endedAt: number;
+  subtasks: SubtaskView[];
+  answer: string;
 }
 
 export interface ParallelObserver {
   /** Split accepted: show the rows. */
   onPlan: (views: SubtaskView[]) => void;
   onUpdate: (view: SubtaskView) => void;
+  /** Display telemetry only; failures here cannot change task execution. */
+  onTask?: (task: ParallelTaskSnapshot) => void;
   /** Coordinator-level phase text (splitting, merging). */
   onPhase: (text: string) => void;
   /** A sub-task's thought/action/observation/skill step, text already prefixed with its label. */
@@ -39,6 +57,8 @@ export interface ParallelObserver {
 export interface SubtaskModelHooks {
   /** Caption such as "子任务 2/3", shown on the compute device that runs it. */
   label: string;
+  taskId?: string;
+  subtaskId?: string;
   onAccepted: (device: string) => void;
 }
 
@@ -46,8 +66,8 @@ export interface ParallelDeps {
   /** A model dedicated to one sub-task: cancel() must stop only that sub-task's requests. */
   modelFor: (subtaskId: string, hooks: SubtaskModelHooks) => LocalModel;
   /** Models for the coordinator steps; the merge model may stream into the answer bubble. */
-  splitModel: () => LocalModel;
-  mergeModel: () => LocalModel;
+  splitModel: (taskId?: string) => LocalModel;
+  mergeModel: (taskId?: string) => LocalModel;
   tools: ToolRegistry;
   skills?: SkillSnapshot;
   maxSteps: number;
@@ -89,6 +109,8 @@ export class ParallelTaskRunner {
   private runners: Set<ReActAgentRunner> = new Set();
   private coordinatorModels: Set<LocalModel> = new Set();
   private serial: number = 0;
+  private snapshot: ParallelTaskSnapshot | null = null;
+  private taskObserver: ParallelObserver | null = null;
 
   constructor(deps: ParallelDeps) {
     this.deps = deps;
@@ -96,6 +118,12 @@ export class ParallelTaskRunner {
 
   requestStop(): void {
     this.stopped = true;
+    if (this.snapshot !== null) {
+      for (const view of this.snapshot.subtasks) {
+        if (view.phase === 'queued' || view.phase === 'running') { view.phase = 'cancelled'; view.detail = '已停止'; if (view.startedAt !== undefined) { view.endedAt = Date.now(); } }
+      }
+      this.publishTask('cancelled');
+    }
     for (const runner of Array.from(this.runners)) {
       try { runner.requestStop(); } catch (_error) { /* best effort */ }
     }
@@ -111,9 +139,10 @@ export class ParallelTaskRunner {
       return false;
     }
     observer.onPhase('正在判断是否可以拆分…');
+    const taskId = 'p' + Date.now().toString(36) + (++this.serial).toString() + Math.floor(Math.random() * 1679616).toString(36);
     let subtasks: Subtask[] | null = null;
     try {
-      const model = this.deps.splitModel();
+      const model = this.deps.splitModel(taskId);
       this.coordinatorModels.add(model);
       try {
         subtasks = await guarded<Subtask[] | null>(splitTask(task, this.recentContext(conversation), model),
@@ -131,7 +160,7 @@ export class ParallelTaskRunner {
     if (subtasks === null) {
       return false;
     }
-    await this.execute(task, subtasks, observer, listener);
+    await this.execute(taskId, task, subtasks, observer, listener);
     return true;
   }
 
@@ -142,13 +171,16 @@ export class ParallelTaskRunner {
       (turn.role === 'user' ? '用户：' : '助手：') + turn.content.substring(0, MAX_HISTORY_CHARS)).join('\n');
   }
 
-  private async execute(task: string, subtasks: Subtask[], observer: ParallelObserver,
+  private async execute(taskId: string, task: string, subtasks: Subtask[], observer: ParallelObserver,
     listener: AgentListener): Promise<void> {
-    const taskId = 'p' + Date.now().toString(36) + (++this.serial).toString();
     const views: SubtaskView[] = subtasks.map((item: Subtask): SubtaskView =>
       ({ id: item.id, title: item.title, device: '', phase: 'queued', detail: '排队中' }));
     const outcomes: SubtaskOutcome[] = subtasks.map((item: Subtask): SubtaskOutcome =>
       ({ id: item.id, title: item.title, device: '', status: 'failed', text: '未执行' }));
+    this.taskObserver = observer;
+    this.snapshot = { id: taskId, title: task.substring(0, 1000), phase: 'running', revision: 0,
+      startedAt: Date.now(), endedAt: 0, subtasks: views, answer: '' };
+    this.publishTask('running');
     observer.onPlan(views.map((view: SubtaskView): SubtaskView => this.copy(view)));
     const total = Math.max(1, Math.min(subtasks.length, this.deps.load().total));
     let next = 0;
@@ -180,6 +212,7 @@ export class ParallelTaskRunner {
     for (let index = 0; index < subtasks.length; index++) {
       if (outcomes[index].text === '未执行' && this.timedOut) {
         outcomes[index].text = '整体超时，未能执行';
+        views[index].phase = 'failed'; views[index].detail = '整体超时，未能执行';
       }
     }
     const usable = outcomes.filter((item: SubtaskOutcome): boolean => item.status === 'ok' || item.status === 'partial');
@@ -187,7 +220,8 @@ export class ParallelTaskRunner {
     let merged = false;
     if (usable.length > 0) {
       observer.onPhase('正在合并 ' + outcomes.length.toString() + ' 个子任务的结果…');
-      const model = this.deps.mergeModel();
+      this.publishTask('merging');
+      const model = this.deps.mergeModel(taskId);
       this.coordinatorModels.add(model);
       try {
         answer = await guarded<string>(mergeOutcomes(task, outcomes, model), MERGE_TIMEOUT_MS,
@@ -207,25 +241,46 @@ export class ParallelTaskRunner {
       answer = concatOutcomes(outcomes);
     }
     const complete = merged && outcomes.every((item: SubtaskOutcome): boolean => item.status === 'ok');
+    if (this.snapshot !== null) this.snapshot.answer = answer.substring(0, 4096);
+    this.publishTask(complete ? 'done' : (usable.length > 0 ? 'partial' : 'failed'));
     listener(new AgentEvent(AgentEventKind.FINAL, answer, undefined, undefined, undefined,
       complete ? undefined : PARTIAL_FINAL_STATUS));
   }
 
   private copy(view: SubtaskView): SubtaskView {
-    return { id: view.id, title: view.title, device: view.device, phase: view.phase, detail: view.detail };
+    return { id: view.id, title: view.title, device: view.device, phase: view.phase, detail: view.detail.substring(0, 256),
+      result: view.result, resultTruncated: view.resultTruncated,
+      startedAt: view.startedAt, endedAt: view.endedAt };
+  }
+
+  private publishTask(phase?: string): void {
+    const task = this.snapshot;
+    if (task === null || task.endedAt > 0) return;
+    if (phase !== undefined) task.phase = phase;
+    task.revision++;
+    if (['done', 'partial', 'failed', 'cancelled'].includes(task.phase)) task.endedAt = Date.now();
+    try {
+      this.taskObserver?.onTask?.({ id: task.id, title: task.title, phase: task.phase, revision: task.revision,
+        startedAt: task.startedAt, endedAt: task.endedAt, answer: task.answer,
+        subtasks: task.subtasks.map((view: SubtaskView): SubtaskView => this.copy(view)) });
+    } catch (_error) { /* Display telemetry must not interrupt the run. */ }
   }
 
   private async runOne(taskId: string, subtask: Subtask, view: SubtaskView, observer: ParallelObserver,
     label: string): Promise<SubtaskOutcome> {
     const update = (phase: SubtaskPhase, detail: string): void => {
       view.phase = phase; view.detail = detail;
+      if (phase === 'running' && view.startedAt === undefined) { view.startedAt = Date.now(); }
+      if (phase !== 'queued' && phase !== 'running' && view.endedAt === undefined) { view.endedAt = Date.now(); if (view.startedAt === undefined) { view.startedAt = view.endedAt; } }
       observer.onUpdate(this.copy(view));
+      this.publishTask();
     };
     let model: LocalModel;
     try {
-      model = this.deps.modelFor(subtask.id, { label: label, onAccepted: (device: string): void => {
+      model = this.deps.modelFor(subtask.id, { label: label, taskId: taskId, subtaskId: subtask.id, onAccepted: (device: string): void => {
         view.device = device;
         observer.onUpdate(this.copy(view));
+        this.publishTask();
       } });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -281,6 +336,8 @@ export class ParallelTaskRunner {
     if (status === 'ok' && text.trim().length === 0) { status = 'failed'; text = '没有返回内容'; }
     if (this.timedOut && status === 'failed' && (text.length === 0 || text === STOPPED_TEXT)) { text = '整体超时'; }
     if (text.length === 0) { text = '没有得到结果'; }
+    view.result = text.substring(0, 2048);
+    view.resultTruncated = text.length > 2048;
     update(status === 'ok' ? 'done' : status, status === 'ok' ? '已完成' : (text.length > 40 ? text.substring(0, 40) + '…' : text));
     return { id: subtask.id, title: subtask.title, device: view.device, status: status, text: text };
   }

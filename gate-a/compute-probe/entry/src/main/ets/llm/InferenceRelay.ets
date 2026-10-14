@@ -20,6 +20,8 @@ export class RelayEvents {
     (_requestId: string, _chatEpoch: number, _answer: string): void => {};
   end: (requestId: string, chatEpoch: number, answer: string, failed: boolean) => void =
     (_requestId: string, _chatEpoch: number, _answer: string, _failed: boolean): void => {};
+  forward: (requestId: string, chatEpoch: number, workerEpoch: number, request: WireMessage) => void =
+    (_requestId: string, _chatEpoch: number, _workerEpoch: number, _request: WireMessage): void => {};
 }
 
 /**
@@ -174,6 +176,7 @@ export class InferenceRelay {
     const messages: ChatMessage[] = message.messages !== undefined ? message.messages :
       [{ role: 'user', content: message.prompt || '' }];
     this.events.begin(id, chatEpoch, target.epoch, messages, message.label !== undefined ? message.label : '');
+    this.events.forward(id, chatEpoch, target.epoch, forwarded);
     hilog.info(0, 'NearbyChat', 'infer relay request=%{public}s forward=%{public}s worker=%{public}d',
       id, dispatch.forwardId, target.epoch);
     this.sender(forwarded, target.epoch).then((sent: boolean): void => {
@@ -245,6 +248,9 @@ export class InferenceRelay {
     if (message.prompt !== undefined) copy.prompt = message.prompt;
     if (message.messages !== undefined) copy.messages = message.messages;
     if (message.label !== undefined) copy.label = message.label;
+    if (message.taskId !== undefined) copy.taskId = message.taskId;
+    if (message.subtaskId !== undefined) copy.subtaskId = message.subtaskId;
+    if (message.origin !== undefined) copy.origin = message.origin;
     if (message.maxOutputTokens !== undefined) copy.maxOutputTokens = message.maxOutputTokens;
     if (typeof message.deadlineBudgetMs === 'number') {
       copy.deadlineBudgetMs = Math.max(MIN_FORWARD_BUDGET_MS, message.deadlineBudgetMs - RELAY_MARGIN_MS);

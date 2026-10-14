@@ -62,6 +62,7 @@ export class InferenceHost implements RelayLocal {
   private answer: string = '';
   private promptText: string = '';
   private clusterProvider: (() => ClusterInfo | null) | null = null;
+  private deviceProvider: (() => string) | null = null;
 
   constructor(model: LocalChat, sender: (message: WireMessage, epoch: number) => Promise<boolean>,
     card: InferCardHooks) {
@@ -74,6 +75,8 @@ export class InferenceHost implements RelayLocal {
   setClusterProvider(provider: (() => ClusterInfo | null) | null): void {
     this.clusterProvider = provider;
   }
+
+  setDeviceProvider(provider: () => string): void { this.deviceProvider = provider; }
 
   /** True from acceptance until the terminal infer.done / infer.error. */
   isActive(): boolean {
@@ -179,7 +182,8 @@ export class InferenceHost implements RelayLocal {
     this.answer = '';
     this.promptText = messages.map((item: ChatMessage): string => item.content).join('\n');
     this.card.begin(requestId, epoch, prompt, message.label !== undefined ? message.label : '');
-    this.send({ type: 'infer.accepted', version: 2, requestId: requestId, state: 'preparing' }, epoch);
+    this.send({ type: 'infer.accepted', version: 2, requestId: requestId, state: 'preparing',
+      device: this.deviceProvider === null ? undefined : this.deviceProvider() }, epoch);
     const error = this.model.start(messages, (update: ChatUpdate) => {
       this.onUpdate(requestId, update);
     }, requestId, {

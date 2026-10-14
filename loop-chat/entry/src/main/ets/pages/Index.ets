@@ -23,6 +23,7 @@ import {
   PARTIAL_FINAL_STATUS,
   ParallelDeps,
   ParallelObserver,
+  ParallelTaskSnapshot,
   ParallelTaskRunner,
   ReActAgentRunner,
   saveConversation,
@@ -36,6 +37,7 @@ import {
 import { getLocalLlmBinding } from '../llm/LocalLlmBinding';
 import { nearbyChannel } from '../nearby/LinkEnhanceChannel';
 import { inferenceClient, INFERENCE_STOPPED } from '../model/InferenceClient';
+import { TaskChildSnapshot, TaskSnapshot } from '../protocol/ChatProtocol';
 import { RemoteComputeModel } from '../model/RemoteComputeModel';
 import { pickAttachment, readTextExcerpt, SavedAttachment } from '../media/ChatAttach';
 import {
@@ -1271,9 +1273,10 @@ struct Index {
     const owner = (name: string): string => 'p' + generation.toString() + ':' + name;
     const deps: ParallelDeps = {
       modelFor: (id: string, hooks: SubtaskModelHooks): LocalModel =>
-        new RemoteComputeModel({ owner: owner(id), onAccepted: hooks.onAccepted, label: hooks.label }),
-      splitModel: (): LocalModel => new RemoteComputeModel({ owner: owner('split'), label: '任务拆分' }),
-      mergeModel: (): LocalModel => new RemoteComputeModel({ owner: owner('merge'), label: '合并结果' }),
+        new RemoteComputeModel({ owner: owner(id), onAccepted: hooks.onAccepted, label: hooks.label,
+          taskId: hooks.taskId, subtaskId: hooks.subtaskId }),
+      splitModel: (taskId?: string): LocalModel => new RemoteComputeModel({ owner: owner('split'), label: '任务拆分', taskId: taskId, subtaskId: 'plan' }),
+      mergeModel: (taskId?: string): LocalModel => new RemoteComputeModel({ owner: owner('merge'), label: '合并结果', taskId: taskId, subtaskId: 'merge' }),
       tools: tools,
       skills: skillSnapshot,
       maxSteps: MAX_STEPS,
@@ -1290,6 +1293,23 @@ struct Index {
   /** Sub-task rows live in the placeholder bubble until the merged answer replaces it. */
   private parallelObserver(generation: number): ParallelObserver {
     const observer: ParallelObserver = {
+      onTask: (task: ParallelTaskSnapshot): void => {
+        if (!this.isCurrentRemoteRun(generation) && task.phase !== 'cancelled') { return; }
+        const subtasks: TaskChildSnapshot[] = [];
+        for (const child of task.subtasks) {
+          const copy: TaskChildSnapshot = {
+            id: child.id, title: child.title, device: child.device, phase: child.phase,
+            detail: child.detail, result: child.result, resultTruncated: child.resultTruncated,
+            startedAt: child.startedAt, endedAt: child.endedAt
+          };
+          subtasks.push(copy);
+        }
+        const snapshot: TaskSnapshot = {
+          id: task.id, title: task.title, phase: task.phase, revision: task.revision,
+          startedAt: task.startedAt, endedAt: task.endedAt, answer: task.answer, subtasks: subtasks
+        };
+        inferenceClient.publishTask(snapshot);
+      },
       onPhase: (text: string): void => {
         if (!this.isCurrentRemoteRun(generation)) { return; }
         this.beginLiveReply();
