@@ -13,3 +13,5 @@ export const takeEvents: () => string[];
 export const complete: () => void;
 export const cancel: () => void;
 export const release: () => void;
+/** false = 本构建编的是空实现（私有预编译库未放置），VL 引擎不可用。 */
+export const available: boolean;

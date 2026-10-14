@@ -157,6 +157,27 @@ assert(validMessage(withImage));
   assert.equal(decoded.image, withImage.image, 'image survives out-of-order fragment assembly');
   assert.equal(decoded.needs.join(','), 'vision');
 }
+// infer 通道的附图：与 request 同一条约束（裸 base64、无 data: 前缀、受 MAX_IMAGE_BASE64 限制）。
+// 缺这道校验，畸形/超长图片会绕过协议层直达 VL 引擎。
+const inferImage = {
+  protocol: 'nearby-chat-v1', type: 'infer.request', version: 2, requestId: 'req-img',
+  prompt: 'describe', maxOutputTokens: 512, deadlineBudgetMs: 180000, image: 'QUJD'
+};
+assert(validMessage(inferImage), 'an infer request may carry a bare base64 image');
+assert(!validMessage({ ...inferImage, image: 'data:image/jpeg;base64,QUJD' }), 'infer image rejects a data-url prefix');
+assert(!validMessage({ ...inferImage, image: 'QU JD!' }), 'infer image alphabet only');
+assert(!validMessage({ ...inferImage, image: '' }), 'infer empty image rejected');
+assert(!validMessage({ ...inferImage, image: 'A'.repeat(MAX_IMAGE_BASE64 + 1) }), 'infer image over budget rejected');
+{
+  // 24000 字符上限的图在 infer 通道同样靠分片传输，装配必须完整还原
+  const bigInferImage = { ...inferImage, requestId: 'req-big', image: 'A'.repeat(20000) };
+  const parts = encodeMessage(bigInferImage, 'big-infer-image');
+  assert(parts.length > 40, 'a 20k-char infer image spans dozens of fragments');
+  const assembler = new MessageAssembler();
+  let decoded = null;
+  for (let i = parts.length - 1; i >= 0; i--) decoded = assembler.receive(parts[i]);
+  assert.equal(decoded.image, bigInferImage.image, 'infer image survives out-of-order fragment assembly');
+}
 assert(validMessage({ protocol: 'nearby-chat-v1', type: 'done', requestId: 'r', source: '来自本机 Qwen' }));
 assert(!validMessage({ protocol: 'nearby-chat-v1', type: 'done', requestId: 'r', source: 'x'.repeat(257) }));
 console.log('PASS: UTF-8 roundtrip, <1KiB envelopes, out-of-order/replay, conflicting duplicates/counts, schema/base64/byte/count/pending limits, incomplete-only timeout, clear, malformed UTF-8, deviceInfo/sched/source, image payload');

@@ -61,7 +61,8 @@ function setup(isServer) {
       cancel() {} readinessError() { return ''; } isBusy() { return false; }
     } };
     if (name === '../llm/QwenVlManager') return { QwenVlManager: { getInstance: () => ({
-      init() {}, isModelEnabled: () => false, getDeployedModelName: () => '', readinessError: () => ''
+      init() {}, isModelEnabled: () => false, getDeployedModelName: () => '', readinessError: () => '',
+      isBusy: () => false, unloadIfIdle() {}
     }) } };
     if (name === '../cluster/ComputeRouter') {
       return loadEts(__dirname + '/../cluster/ComputeRouter.ets');

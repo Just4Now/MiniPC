@@ -13,6 +13,11 @@ export class PoolNode {
   ready: boolean = false;
   inflight: number = 0;
   memAvail: number = -1;
+  /**
+   * 该节点模型可提供的能力（如 ['text','vision']）。
+   * 未声明按纯文本处理 —— 与 ComputeRouter.ScheduleNode 的约定保持一致。
+   */
+  capabilities: string[] = ['text'];
 }
 
 export class ClusterLoad {
@@ -37,6 +42,30 @@ export function pickIdle(nodes: PoolNode[]): PoolNode | null {
     }
   }
   return best;
+}
+
+/** 能力是硬门槛：needs 的每一项都必须在节点声明的 capabilities 里。 */
+export function meetsCapabilities(node: PoolNode, needs: string[]): boolean {
+  for (const need of needs) {
+    if (node.capabilities.indexOf(need) < 0) return false;
+  }
+  return true;
+}
+
+/**
+ * 带能力门槛的空闲节点选择 —— **infer 转发路径必须用它**。
+ *
+ * 背景：infer 通路原先直接用 `pickIdle`（只按空闲与可用内存挑），完全不看能力，
+ * 真机实测因此出现三种错配：
+ *   1. 文本请求被转给只有 VL 权重的节点；
+ *   2. 带图请求被转给纯文本节点；
+ *   3. hub 自己被选中后**本地服务**一个它根本不具备能力的请求
+ *      （图片落到纯文本 hub → 回「VL 模型未部署」）。
+ * nearby-chat 通路本来就有同义门槛（`ComputeRouter.meetsNeeds`），这里把 infer 侧补齐。
+ */
+export function pickIdleFor(nodes: PoolNode[], needs: string[]): PoolNode | null {
+  if (needs.length === 0) return pickIdle(nodes);
+  return pickIdle(nodes.filter((node: PoolNode): boolean => meetsCapabilities(node, needs)));
 }
 
 export function clusterLoad(nodes: PoolNode[]): ClusterLoad {

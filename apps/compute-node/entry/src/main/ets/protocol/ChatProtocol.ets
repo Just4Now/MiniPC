@@ -249,6 +249,12 @@ function validInference(m: WireMessage): boolean {
   if (typeof m.requestId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(m.requestId)) return false;
   if (m.prompt !== undefined && (typeof m.prompt !== 'string' ||
     new util.TextEncoder().encodeInto(m.prompt).length > 32768)) return false;
+  // infer 通道的可选附图：与 nearby-chat request 同一条约束（裸 base64、无 data: 前缀、
+  // 受 MAX_IMAGE_BASE64 限制）。缺这道校验，畸形/超长图片会绕过协议层直达 VL 引擎。
+  if (m.image !== undefined) {
+    if (typeof m.image !== 'string' || m.image.length === 0 || m.image.length > MAX_IMAGE_BASE64 ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(m.image)) return false;
+  }
   if (m.text !== undefined && (typeof m.text !== 'string' ||
     new util.TextEncoder().encodeInto(m.text).length > 1024)) return false;
   if (m.message !== undefined && (typeof m.message !== 'string' || m.message.length > 1024)) return false;

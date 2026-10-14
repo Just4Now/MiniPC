@@ -695,12 +695,17 @@ napi_value Release(napi_env env, napi_callback_info info)
 
 napi_value Init(napi_env env, napi_value exports)
 {
+    // available：本模块是真引擎还是空实现。两条 CMake 分支的模块名与导出面完全一致，
+    // ArkTS 侧靠它把「引擎未编入」和「模型未部署」区分开，避免误导性报错。
+    napi_value available;
+    napi_get_boolean(env, true, &available);
     napi_property_descriptor properties[] = {
         {"start", nullptr, Start, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"takeEvents", nullptr, TakeEvents, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"complete", nullptr, Complete, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"cancel", nullptr, Cancel, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"release", nullptr, Release, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"available", nullptr, nullptr, nullptr, nullptr, available, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties);
     return exports;

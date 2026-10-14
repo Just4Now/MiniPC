@@ -44,7 +44,7 @@ const context = { exports: {}, ArrayBuffer, Uint8Array, Date: { now: () => 123 }
     return {};
   } };
 vm.runInNewContext(transpile(__dirname + '/VlLlmTransport.ets'), context);
-const { VlLlmTransport } = context.exports;
+const { VlLlmTransport, cleanVlPrompt } = context.exports;
 
 // 裸 base64（新版管线格式）→ 解码落盘
 {
@@ -108,6 +108,45 @@ const { VlLlmTransport } = context.exports;
   assert.equal(called.prompt, '请看', '（附图） prefix is peeled');
 }
 
+// 回归（P3 根因，真机实测）：infer 通路的 user 段是 **ReAct 分段**，
+// 形如 "User task:\n（附图）<问题>\n\n\nControl: Current"。
+// 脚手架不剥干净时，3B VL 模型会按该框架"续写"，输出 `Action: {乱码}<|im_end|>`、
+// `2<|im_end|>` 这类垃圾，而引擎仍报 rc=0 —— 用户看到的就是"得不到准确结果"。
+{
+  const t = new VlLlmTransport('/cache', '/files');
+  engineStarts = 0; called = null;
+  const react = 'User task:\n（附图）这是只什么动物\n\n\nControl: Current\n';
+  assert.equal(t.start([{ role: 'user', content: react }], () => {}, 'g',
+    '/data/storage/el2/base/cache/qwenvl_1.jpg'), '');
+  assert.equal(engineStarts, 1);
+  assert.equal(called.prompt, '这是只什么动物', 'ReAct scaffolding is stripped down to the question');
+}
+// 老通路（无脚手架）必须完全不受影响：清洗是 no-op
+{
+  const t = new VlLlmTransport('/cache', '/files');
+  called = null;
+  t.start([{ role: 'user', content: '这只猫是什么颜色的' }], () => {}, 'h',
+    '/data/storage/el2/base/cache/qwenvl_1.jpg');
+  assert.equal(called.prompt, '这只猫是什么颜色的', 'a plain question is untouched');
+}
+// 只有 Control 段的截图类任务也要剥干净
+{
+  const t = new VlLlmTransport('/cache', '/files');
+  called = null;
+  t.start([{ role: 'user', content: 'User task:\n图中的算式等于几\n\n\nControl: Current' }], () => {}, 'i',
+    '/data/storage/el2/base/cache/qwenvl_1.jpg');
+  assert.equal(called.prompt, '图中的算式等于几', 'Control group is dropped');
+}
+// 边界：任务为空时返回空串，由 QwenVlManager 的默认提示词兜底
+assert.equal(cleanVlPrompt('User task:\n（附图）\n\n\nControl: Current'), '', 'empty task stays empty');
+assert.equal(cleanVlPrompt('Control: Current'), '', 'a pure control group yields empty');
+assert.equal(cleanVlPrompt('（附图）好看不'), '好看不', 'bare marker is peeled without scaffolding');
+// 问题正文里出现 "Control:" 不能被误截断（只有行首独占的那一行才是 ReAct 控制组）
+assert.equal(cleanVlPrompt('这个 Control: 是什么意思'), '这个 Control: 是什么意思',
+  'a mid-sentence Control: is part of the question');
+assert.equal(cleanVlPrompt('User task:\n这个 Control: 是啥\n\n\nControl: Current'), '这个 Control: 是啥',
+  'only the line-anchored control group is dropped');
+
 // 引擎未部署 → 门控失败，不触碰引擎
 {
   const t = new VlLlmTransport('/cache', '/files');
@@ -145,4 +184,4 @@ const { VlLlmTransport } = context.exports;
   assert.equal(updates.length, 1, 'only the final done surfaces');
 }
 
-console.log('PASS: VlLlmTransport image forms, prompt peeling, readiness gate, event mapping');
+console.log('PASS: VlLlmTransport image forms, prompt peeling (incl. ReAct scaffolding), readiness gate, event mapping');

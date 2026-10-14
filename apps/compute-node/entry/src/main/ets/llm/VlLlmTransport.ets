@@ -28,6 +28,56 @@ const SOURCE_TAG: string = '本机·Qwen2.5-VL-3B-NPU(NPU)';
 /** 裸 base64 判定：与协议 image 校验一致（仅 base64 字母表 + 尾部 padding） */
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
+/**
+ * 把上行 user 段清洗成 VL 引擎能直接用的提问。
+ *
+ * 两条上行的 user 段格式不同：
+ *   - nearby-chat `request`：就是用户原话（可能以「（附图）」开头）；
+ *   - infer `infer.request`：聊天端发的是 **ReAct 分段**，user 段形如
+ *     `User task:\n（附图）<问题>\n\n\nControl: Current`（带脚手架）。
+ *
+ * 残留 `User task:` / `Control:` 会让 3B 模型试图按该框架"续写"，输出
+ * `Action: {乱码}<|im_end|>`、`2<|im_end|>` 这类垃圾，而引擎仍报 rc=0
+ * （真机实测：P3 之后 4 次带图请求 1 次侥幸正常、3 次垃圾）。
+ * 本函数对没有这些标记的输入是 no-op，因此对旧通路完全向后兼容。
+ */
+export function cleanVlPrompt(raw: string): string {
+  let text = raw;
+  const task = text.indexOf('User task:');
+  if (task >= 0) {
+    text = text.substring(task + 'User task:'.length);
+  }
+  const control = controlLineAt(text);
+  if (control >= 0) {
+    text = text.substring(0, control);
+  }
+  text = text.trim();
+  if (text.startsWith('（附图）')) {
+    text = text.substring(4).trim();
+  }
+  return text;
+}
+
+/**
+ * 找 **独占一行** 的 `Control:`（行首或字符串开头）。
+ *
+ * 不能直接 `indexOf('Control:')`：用户问题里出现该词时会被误截断
+ * （例如「这个 Control: 是什么意思」）。ReAct 的 Control 组永远行首独占一行。
+ */
+function controlLineAt(text: string): number {
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf('Control:', from);
+    if (at < 0) {
+      return -1;
+    }
+    if (at === 0 || text.charAt(at - 1) === '\n') {
+      return at;
+    }
+    from = at + 1;
+  }
+}
+
 export class VlLlmTransport implements LlmTransport {
   private cacheDir: string;
   private filesDir: string;
@@ -178,15 +228,11 @@ export class VlLlmTransport implements LlmTransport {
     }
   }
 
-  /** prompt 取最后一条 user 消息，剥离 html 的"（附图）"伪前缀 */
+  /** prompt 取最后一条 user 消息，并剥掉推理链路的脚手架（见 cleanVlPrompt）。 */
   private buildPrompt(messages: ChatMessage[]): string {
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === 'user') {
-        let text = messages[i].content || '';
-        if (text.startsWith('（附图）')) {
-          text = text.substring(4);
-        }
-        return text;
+        return cleanVlPrompt(messages[i].content || '');
       }
     }
     return '';

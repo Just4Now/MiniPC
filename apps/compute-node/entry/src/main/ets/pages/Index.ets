@@ -160,6 +160,8 @@ struct Index {
           hilog.warn(0, 'NearbyChat', 'VL transport unavailable: %{public}s',
             e instanceof Error ? e.message : 'unknown');
         }
+        // 聊天端（远端）的带图请求走同一条 VL 通道；未部署时传 null，InferenceHost 会 fail closed。
+        host.setVisionTransport(this.vlTransport);
     }
   }
 
@@ -650,6 +652,9 @@ struct Index {
     if (image.length > 0 && this.vlTransport !== null) {
       return this.vlTransport.start(messages, (update: ChatUpdate) => this.localUpdate(key, update), key, image);
     }
+    // 任务切到纯文本：先卸载驻留的 VL 权重（约 5.3GB）。否则 GEWU 再加载 5.8GB 文本模型
+    // 会超过本机内存（MemTotal 15.8GB），被系统低内存杀手杀掉进程——真机实测。
+    QwenVlManager.getInstance().unloadIfIdle();
     if (this.transport !== null) {
       return this.transport.start(messages, (update: ChatUpdate) => this.localUpdate(key, update), key, image);
     }
@@ -840,6 +845,9 @@ struct Index {
     own.ready = this.model !== null && !!self.model && self.model.length > 0;
     own.inflight = Math.max(self.modelRequests === undefined ? 0 : self.modelRequests, this.inference?.isActive() ? 1 : 0);
     own.memAvail = self.memAvail === undefined ? -1 : self.memAvail;
+    // 能力必须透传给转发决策：infer 侧按它做硬门槛（见 pickIdleFor）。
+    own.capabilities = self.capabilities !== undefined && self.capabilities.length > 0 ?
+      self.capabilities : ['text'];
     nodes.push(own);
     const peers = this.channel.peerInfos();
     for (const peer of peers) {
@@ -851,6 +859,8 @@ struct Index {
       node.ready = !!stats && !!stats.model && stats.model.length > 0;
       node.inflight = this.router.workerLoad(peer.epoch, stats?.modelRequests === undefined ? 0 : stats.modelRequests);
       node.memAvail = stats?.memAvail === undefined ? -1 : stats.memAvail;
+      node.capabilities = stats !== undefined && stats.capabilities !== undefined &&
+        stats.capabilities.length > 0 ? stats.capabilities : ['text'];
       nodes.push(node);
     }
     return nodes;

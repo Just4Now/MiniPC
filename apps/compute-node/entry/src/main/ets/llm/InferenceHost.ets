@@ -1,6 +1,8 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ChatMessage as WireChatMessage, ClusterInfo, InferProfile, WireMessage } from '../protocol/ChatProtocol';
 import { ChatMessage, ChatUpdate, LocalChat } from './LocalChat';
+import { LlmTransport } from './LlmTransport';
+import { QwenVlManager } from './QwenVlManager';
 import { RelayLocal } from './InferenceRelay';
 import { sha256Hex, splitUtf8, utf8Bytes } from './InferenceWire';
 import { repairUtf8FromSource } from './Utf8Repair';
@@ -60,8 +62,12 @@ export class InferenceHost implements RelayLocal {
   private activeEpoch: number = 0;
   private seq: number = 0;
   private answer: string = '';
+  /** 本请求是否已报过 generating（每请求重置一次，避免刷屏）。 */
+  private statusSent: boolean = false;
   private promptText: string = '';
   private clusterProvider: (() => ClusterInfo | null) | null = null;
+  /** 可缺省的多模态通道；为 null 时带图请求 fail closed，绝不降级给纯文本引擎。 */
+  private vision: LlmTransport | null = null;
 
   constructor(model: LocalChat, sender: (message: WireMessage, epoch: number) => Promise<boolean>,
     card: InferCardHooks) {
@@ -73,6 +79,11 @@ export class InferenceHost implements RelayLocal {
   /** Compute hub only: lets capabilities report the whole cluster, not just this device. */
   setClusterProvider(provider: (() => ClusterInfo | null) | null): void {
     this.clusterProvider = provider;
+  }
+
+  /** 由页面注入多模态通道；未部署 VL 权重时传 null。 */
+  setVisionTransport(transport: LlmTransport | null): void {
+    this.vision = transport;
   }
 
   /** True from acceptance until the terminal infer.done / infer.error. */
@@ -160,6 +171,8 @@ export class InferenceHost implements RelayLocal {
     const requestId = message.requestId || '';
     const messages = requestMessages(message);
     const prompt = messages[messages.length - 1].content;
+    const image = message.image !== undefined ? message.image : '';
+    const vision = this.vision;
     if (this.model.isBusy() || this.activeId.length > 0) {
       this.fail(requestId, epoch, 'BUSY', '算力繁忙，请稍后重试', true);
       return;
@@ -168,10 +181,26 @@ export class InferenceHost implements RelayLocal {
       this.fail(requestId, epoch, 'PAYLOAD_TOO_LARGE', '本轮输入超过传输限制', false);
       return;
     }
-    const missing = this.model.readinessError();
-    if (missing.length > 0) {
-      this.fail(requestId, epoch, 'MODEL_UNAVAILABLE', missing, true);
-      return;
+    if (image.length > 0) {
+      // 带图必须走多模态通道：VL 权重未部署时 fail closed，绝不降级给纯文本引擎。
+      if (vision === null) {
+        this.fail(requestId, epoch, 'MODEL_UNAVAILABLE', '本地模型不支持图片理解。', true);
+        return;
+      }
+      const visionMissing = vision.readinessError();
+      if (visionMissing.length > 0) {
+        this.fail(requestId, epoch, 'MODEL_UNAVAILABLE', visionMissing, true);
+        return;
+      }
+    } else {
+      // 任务切到纯文本：先卸载驻留的 VL 权重（约 5.3GB）。否则 GEWU 再加载 5.8GB 文本模型
+      // 会超过本机内存，被系统低内存杀手杀掉进程（真机实测 LOW_MEMORY_KILL）。
+      QwenVlManager.getInstance().unloadIfIdle();
+      const missing = this.model.readinessError();
+      if (missing.length > 0) {
+        this.fail(requestId, epoch, 'MODEL_UNAVAILABLE', missing, true);
+        return;
+      }
     }
     this.activeId = requestId;
     this.activeEpoch = epoch;
@@ -180,12 +209,25 @@ export class InferenceHost implements RelayLocal {
     this.promptText = messages.map((item: ChatMessage): string => item.content).join('\n');
     this.card.begin(requestId, epoch, prompt, message.label !== undefined ? message.label : '');
     this.send({ type: 'infer.accepted', version: 2, requestId: requestId, state: 'preparing' }, epoch);
-    const error = this.model.start(messages, (update: ChatUpdate) => {
-      this.onUpdate(requestId, update);
-    }, requestId, {
-      maxTokens: outputBudget(message.maxOutputTokens),
-      waitSeconds: waitSeconds(message.deadlineBudgetMs)
-    });
+    // 请求级阶段上报：受理后先报 loading，首个 delta 到达时报 generating。
+    // 目的是覆盖"加载权重 + prefill"那段静默（真机实测 GEWU 每步约 30s 才出首字）。
+    // 注：warm 的 VL 引擎并不需要加载，这里会短暂多报一次 loading；待会话复用（P4）落地后，
+    // 可由引擎的 warm 标志把它变成精确值。
+    this.statusSent = false;
+    this.send({ type: 'infer.status', version: 2, requestId: requestId, state: 'loading' }, epoch);
+    let error: string;
+    if (image.length > 0 && vision !== null) {
+      error = vision.start(messages, (update: ChatUpdate) => {
+        this.onUpdate(requestId, update);
+      }, requestId, image);
+    } else {
+      error = this.model.start(messages, (update: ChatUpdate) => {
+        this.onUpdate(requestId, update);
+      }, requestId, {
+        maxTokens: outputBudget(message.maxOutputTokens),
+        waitSeconds: waitSeconds(message.deadlineBudgetMs)
+      });
+    }
     if (error.length > 0) {
       this.activeId = '';
       this.fail(requestId, epoch, 'MODEL_EXECUTION_FAILED', error, true);
@@ -197,6 +239,10 @@ export class InferenceHost implements RelayLocal {
       return;
     }
     if (update.kind === 'delta') {
+      if (!this.statusSent) {
+        this.statusSent = true;
+        this.send({ type: 'infer.status', version: 2, requestId: requestId, state: 'generating' }, this.activeEpoch);
+      }
       const pieces = splitUtf8(update.text, 1024);
       for (const piece of pieces) {
         this.seq += 1;

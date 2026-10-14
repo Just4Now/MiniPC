@@ -18,6 +18,15 @@ import { readyModelDirs, isVlLayout, readinessOf } from './ModelRegistry';
 const TAG: string = 'QwenVlManager';
 const DOMAIN: number = 0x0004;
 
+/**
+ * 本构建是否编入了真 VL 引擎。
+ *
+ * `libqwenvl_engine.so` 有两条构建分支（真引擎 / 空实现），模块名与导出面完全一致，
+ * 所以静态 import 永远成立；靠这个标志把「引擎未编入」和「模型未部署」区分开，
+ * 否则私有库缺失时会报出误导性的「引擎启动失败」。
+ */
+const ENGINE_AVAILABLE: boolean = engine.available === true;
+
 /** 事件轮询周期（ms） */
 const POLL_INTERVAL_MS: number = 80;
 
@@ -43,6 +52,9 @@ class NativeEvent {
 
 export class QwenVlManager {
   private static instance: QwenVlManager | null = null;
+
+  /** 引擎里是否可能驻留着约 5.3GB 的 VL 权重（start 成功后置 true，release 后置 false）。 */
+  private weightsMayBeLoaded: boolean = false;
 
   private filesDir: string = '';
   /** 已部署 VL 模型目录名（init 时从 ModelRegistry 扫描一次并缓存）；空串=未部署 */
@@ -111,6 +123,9 @@ export class QwenVlManager {
 
   /** 就绪检查：返回错误文案，空串=可推理（权重可读） */
   public readinessError(): string {
+    if (!ENGINE_AVAILABLE) {
+      return '本构建未编入 VL 引擎（私有预编译库未放置，CMake 编的是空实现）';
+    }
     if (this.closed || this.filesDir === '') {
       return '模型服务未初始化';
     }
@@ -178,6 +193,7 @@ export class QwenVlManager {
       return false;
     }
     this.busy = true;
+    this.weightsMayBeLoaded = true;
     this.cancelled = false;
     this.answer = '';
     this.failure = '';
@@ -207,8 +223,29 @@ export class QwenVlManager {
     engine.complete();
     engine.release();
     this.busy = false;
+    this.weightsMayBeLoaded = false;
     this.cleanupTimer();
     this.callback = null;
+  }
+
+  /**
+   * 任务从「带图」切到「纯文本」前调用：把驻留的 VL 权重（约 5.3GB）卸载掉。
+   *
+   * 不卸载会与本机文本模型（`Qwen2.5-7B-Instruct-Q4_N_0/params` 约 5.8GB）叠加：
+   * 本设备 MemTotal 15.8GB，两者合计约 11.1GB，GEWU 再加载文本模型会触发系统低内存
+   * 杀手，应用进程被直接杀掉（真机实测 `LOW_MEMORY_KILL` / `killReason is StabilityCheckKill`）。
+   *
+   * 反方向（纯文本 → 带图）不需要处理：GEWU 每个任务结束都会 `OH_QoS_GewuDestroySession`
+   * 并释放文本模型，真机实测内存回落到 36% 后再加载 VL 引擎正常。
+   *
+   * 推理进行中（busy）不卸载，避免打断在途请求；从未加载过则不产生调用与日志。
+   */
+  public unloadIfIdle(): void {
+    if (!this.weightsMayBeLoaded || this.busy) {
+      return;
+    }
+    hilog.info(DOMAIN, TAG, 'unload VL weights before a text task (frees ~5.3GB)');
+    this.release();
   }
 
   private startPolling(): void {
@@ -250,8 +287,8 @@ export class QwenVlManager {
         this.emit({ loading: true });
         break;
       case 'response':
-        this.answer += ev.payload;
-        this.emit({ delta: ev.payload });
+        this.appendAnswer(ev.payload);
+        break;
         break;
       case 'error':
         this.failNow(ev.payload);
@@ -293,6 +330,44 @@ export class QwenVlManager {
       }
     }
     return text;
+  }
+
+  /**
+   * 累积模型输出：先剥掉特殊 token 残片，再计入回答（见 stripSpecialTokens）。
+   */
+  private appendAnswer(payload: string): void {
+    const clean = QwenVlManager.stripSpecialTokens(payload);
+    if (clean.length !== payload.length) {
+      // 保留"模型确实响应了"的可观测性：只是不再让它污染回答文本。
+      hilog.info(DOMAIN, TAG, 'special token stripped from output (model did respond)');
+    }
+    this.answer += clean;
+    this.emit({ delta: clean });
+  }
+
+  /**
+   * 剥离模型输出里的特殊 token 残片（如 `<|im_end|>`）。
+   *
+   * 结束符本不该进入回答，但引擎会原样透传。除了显示难看，它**会把回答长度顶过重试守卫
+   * 的阈值** —— 守卫是 `answer.trim().length < 2`：退化输出 `2` 本应触发重试，拼成
+   * `2<|im_end|>` 后是 12 个字符 → 不重试 → 垃圾直接交给用户（真机实测 `2<|im_end|>`）。
+   * 剥掉残片即可让守卫重新生效。
+   *
+   * 只剥**完整**的 `<|...|>`：遇到半个标记（分片边界切开）原样保留，避免丢字。
+   */
+  private static stripSpecialTokens(text: string): string {
+    let out = text;
+    for (;;) {
+      const start = out.indexOf('<|');
+      if (start < 0) {
+        return out;
+      }
+      const end = out.indexOf('|>', start);
+      if (end < 0) {
+        return out;
+      }
+      out = out.substring(0, start) + out.substring(end + 2);
+    }
   }
 
   private finish(): void {

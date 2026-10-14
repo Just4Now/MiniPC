@@ -60,12 +60,16 @@ napi_value Release(napi_env env, napi_callback_info info)
 
 napi_value Init(napi_env env, napi_value exports)
 {
+    // available=false：告诉 ArkTS 侧「这个构建里没有真引擎」，而不是让它去猜。
+    napi_value available;
+    napi_get_boolean(env, false, &available);
     napi_property_descriptor properties[] = {
         {"start", nullptr, Start, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"takeEvents", nullptr, TakeEvents, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"complete", nullptr, Complete, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"cancel", nullptr, Cancel, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"release", nullptr, Release, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"available", nullptr, nullptr, nullptr, nullptr, available, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties);
     return exports;
