@@ -6,6 +6,11 @@ import { repairUtf8FromSource } from './Utf8Repair';
 
 const NEGOTIATE_MS = 10000;
 const ACCEPTED_MS = 10000;
+/**
+ * 每个近场分片（480 字节）额外给的受理预算。
+ * 带图请求约 50+ 分片 → 超时约 10s + 20s，避免"上传还没完就先判算力端未确认"。
+ */
+const ACCEPTED_PER_FRAME_MS = 400;
 // Budget granted to the compute host. It stops generating and reports
 // infer.error inside this window; DELIVERY_GRACE_MS covers that report's trip.
 const DEADLINE_MS = 170000;
@@ -25,6 +30,11 @@ export interface InferHooks {
   onDelta?: (text: string) => void;
   /** The device that actually runs the request (compute hub reports it on acceptance). */
   onAccepted?: (device: string) => void;
+  /**
+   * 算力端的请求级阶段（`infer.status` 的 state：queued/loading/prefill/generating）。
+   * 用来覆盖"加载权重 + prefill"那段静默 —— 真机实测文本路径首字要等约 30s。
+   */
+  onPhase?: (state: string) => void;
   /** Requests sharing an owner can be cancelled together without touching other owners. */
   owner?: string;
   /** Caption shown on the compute device's task card (≤64 chars). */
@@ -51,6 +61,8 @@ class StreamState {
   firstStarted: number = 0;
   hooks: InferHooks = {};
   messages: ChatMessage[] | undefined = undefined;
+  /** 本轮附图（裸 base64）；重试沿用同一张图，故存在 state 上而非一次性参数。 */
+  image: string = '';
   outputTokens: number = 0;
   resolve: ((value: string) => void) | null = null;
   reject: ((error: Error) => void) | null = null;
@@ -233,7 +245,8 @@ class InferenceClient {
    * being stopped waits for the host's acknowledgement instead of being
    * rejected as busy. Several requests may be in flight at once.
    */
-  complete(prompt: string, hooks: InferHooks = {}, split: InferSplit | null = null): Promise<string> {
+  complete(prompt: string, hooks: InferHooks = {}, split: InferSplit | null = null,
+    image: string = ''): Promise<string> {
     if (!this.isReady() || this.profile === null) {
       return Promise.reject(new Error('算力端版本不支持'));
     }
@@ -257,6 +270,7 @@ class InferenceClient {
     state.owner = hooks.owner !== undefined ? hooks.owner : '';
     state.hooks = hooks;
     state.messages = messages;
+    state.image = image;
     state.outputTokens = outputTokens;
     const result = new Promise<string>((resolve: (value: string) => void, reject: (error: Error) => void) => {
       state.resolve = resolve;
@@ -268,6 +282,27 @@ class InferenceClient {
     }
     this.start(state);
     return result;
+  }
+
+  /**
+   * 受理超时：**随请求载荷缩放**。
+   *
+   * 原先固定 `ACCEPTED_MS`（10s），但带图请求要传约 24000 字符 base64（≈50+ 分片），
+   * 而算力端只有在**完整重组出请求之后**才会回 `infer.accepted` —— 上传一旦超过 10s，
+   * 聊天端就先判「算力端未确认本次请求」并放弃，而算力端浑然不知地跑完推理，
+   * 结果没有任何人展示（真机实测）。这里按分片数给传输留预算。
+   */
+  private acceptanceMs(state: StreamState): number {
+    let bytes = state.image.length;
+    if (state.messages !== undefined) {
+      for (const item of state.messages) {
+        bytes += utf8Bytes(item.content).length;
+      }
+    } else {
+      bytes += utf8Bytes(state.prompt).length;
+    }
+    const frames = Math.ceil((bytes + 256) / 480);   // 分片 480 字节，与 ChatProtocol 对齐
+    return ACCEPTED_MS + ACCEPTED_PER_FRAME_MS * frames;
   }
 
   /** First dispatch of a call: fires onStart once, then sends. */
@@ -304,7 +339,7 @@ class InferenceClient {
     clearTimeout(state.timer);
     state.timer = setTimeout(() => {
       this.expire(requestId);
-    }, ACCEPTED_MS);
+    }, this.acceptanceMs(state));
     const request: WireMessage = {
       type: 'infer.request', version: 2, requestId: requestId,
       clientInstanceId: 'loopchat', agentRunId: this.nextId('run'),
@@ -318,6 +353,11 @@ class InferenceClient {
       request.messages = state.messages;
     } else {
       request.prompt = state.prompt;
+    }
+    // 附图（裸 base64）只在确有图片时挂字段：值为空串也会成为键，
+    // 会被算力端 validInference 的 hasOnly 判为未知字段而拒收。
+    if (state.image.length > 0) {
+      request.image = state.image;
     }
     return this.deliver(request, state.epoch, (): void => {
       if (this.calls.get(requestId) === state) {
@@ -455,6 +495,14 @@ class InferenceClient {
         this.cluster = message.cluster;
         this.notifyLoad();
         this.retryWaiting();
+      }
+      // 请求级阶段：只派发给发起该请求的调用，用于直播气泡的阶段文案。
+      // （infer.status 也被通道当作集群信息载体，那种帧没有 requestId，自然被这里忽略。）
+      if (typeof message.state === 'string' && typeof message.requestId === 'string') {
+        const pending = this.calls.get(message.requestId);
+        if (pending !== undefined && pending.hooks.onPhase !== undefined) {
+          pending.hooks.onPhase(message.state);
+        }
       }
       return;
     }

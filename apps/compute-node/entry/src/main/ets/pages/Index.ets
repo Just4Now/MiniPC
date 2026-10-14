@@ -12,12 +12,14 @@ import { WireMessage, ChatMessage, ClusterInfo, DeviceInfoEntry } from '../proto
 import { IS_SERVER } from '../nearby/NearbyConfig';
 import { ComputeRouter, DispatchEntry, ScheduleNode, originKeyOf, pickRoute } from '../cluster/ComputeRouter';
 import { LocalLlmTransport } from '../llm/LlmTransport';
-import { pickJpegDataUrl } from '../media/ImageAttach';
+import { VlLlmTransport } from '../llm/VlLlmTransport';
+import { QwenVlManager } from '../llm/QwenVlManager';
+import { pickJpegDataUrl, jpegBase64Payload } from '../media/ImageAttach';
 import {
   DEVICE_INFO_POLL_MS, applyDeviceInfo, buildSelfEntry,
   toDeviceInfoReply
 } from '../cluster/DeviceInfo';
-import { chatLabel, computeLabel, hidePhoneName, publicLabel, workerTail } from '../cluster/DeviceLabels';
+import { chatLabel, computeLabel, hidePhoneName, needsLabel, publicLabel, workerTail } from '../cluster/DeviceLabels';
 import { ChatBridge } from '../ui/ChatBridge';
 import { ActiveJob, DeviceView, JobView, PageEvent } from '../ui/DashboardTypes';
 import { collaborationScreen } from '../ui/CollaborationScreen';
@@ -71,8 +73,7 @@ struct Index {
         this.autoConnect = true;
         this.ensureCollaborationReady(true);
       }
-    }, () => { this.pickImage(); }, () => { this.clearFinishedJobs(); });
-  private channel = nearbyChannel;
+    }, () => { this.pickImage(); }, () => { this.clearFinishedJobs(); }, () => { this.pendingImage = ''; });  private channel = nearbyChannel;
   private connecting: boolean = false;
   private preparation: Promise<void> | null = null;
   private serviceReady: boolean = false;
@@ -84,6 +85,8 @@ struct Index {
   private inference: InferenceHost | null = null;
   private relay: InferenceRelay | null = null;
   private transport: LocalLlmTransport | null = null;
+  /** 本机多模态引擎通道（带图请求专用；VL 权重未部署时为空仍可创建，门控由内部就绪检查负责） */
+  private vlTransport: VlLlmTransport | null = null;
   private pageReady: boolean = false;
   private connectionError: string = '';
   private activeId: string = '';
@@ -144,6 +147,21 @@ struct Index {
         host, (message: WireMessage, epoch: number): Promise<boolean> => this.channel.send(message, epoch), events);
       host.setClusterProvider((): ClusterInfo | null => this.isComputeHub() ? this.relay?.load() ?? null : null);
       this.transport = new LocalLlmTransport(this.model);
+        // 多模态引擎通道（可缺省）：VL 权重是否部署由 ModelRegistry 扫描决定，这里只建通道；
+        // 构造或初始化失败时置空，带图请求回落为纯文本，不影响应用其余功能。
+        try {
+          this.vlTransport = new VlLlmTransport(context.cacheDir, this.filesDir);
+          QwenVlManager.getInstance().init(this.filesDir);
+          hilog.info(0, 'NearbyChat', 'VL ready enabled=%{public}s model=%{public}s',
+            String(QwenVlManager.getInstance().isModelEnabled()),
+            QwenVlManager.getInstance().getDeployedModelName() || 'NA');
+        } catch (e) {
+          this.vlTransport = null;
+          hilog.warn(0, 'NearbyChat', 'VL transport unavailable: %{public}s',
+            e instanceof Error ? e.message : 'unknown');
+        }
+        // 聊天端（远端）的带图请求走同一条 VL 通道；未部署时传 null，InferenceHost 会 fail closed。
+        host.setVisionTransport(this.vlTransport);
     }
   }
 
@@ -152,6 +170,7 @@ struct Index {
     collaborationScreen.setWanted(false);
     this.stopInfoPoll();
     this.stopMeshRetry();
+    this.vlTransport?.cancel();
     this.model?.close();
     this.channel.disconnect();
     this.channel.unsubscribe();
@@ -303,15 +322,18 @@ struct Index {
       source: computeLabel(workerEpoch, peers, this.selfComputeLabel()),
       origin: originLabel.length > 0 ? this.forwardedOrigin(originLabel) : (peer ? chatLabel(epoch, peers) : '本机'),
       workerEpoch: workerEpoch,
-      image: peer ? '' : image,
+      // 管线内图片一律裸 base64；仅本机与 Hub 自转发的任务转回 data URL 供聊天
+      // 轨道展示，聊天端来源的任务不回传（仪表盘流式刷新会反复序列化 20KB+ 数据）。
+      image: peer && epoch !== 0 ? '' :
+        (image.length > 0 ? 'data:image/jpeg;base64,' + image : ''),
       routeMode: routeMode
     };
   }
 
-  /** A forwarded task may expose only the public chat label, never a phone name. */
+  /** A forwarded task may expose only the public chat/compute label, never a phone name. */
   private forwardedOrigin(origin: string): string {
     const label = origin.trim();
-    if (label === '本机' || label === '聊天设备' || label.indexOf('聊天设备') === 0) return label;
+    if (label === '本机' || label.indexOf('聊天设备') === 0 || label.indexOf('算力设备') === 0) return label;
     return '聊天设备';
   }
 
@@ -358,7 +380,7 @@ struct Index {
       jobs: this.jobs.filter((item: ActiveJob) => item.workerEpoch === 0).length,
       role: 'self', model: self.model, memUsage: self.memUsage,
       thermalLevel: self.thermalLevel, batteryTemp: self.batteryTemp, cpuUsage: self.cpuUsage,
-      modelRequests: self.modelRequests
+      modelRequests: self.modelRequests, capabilities: self.capabilities
     });
     seen.push('id:' + selfUid);
     // Deduplicate on connection identity, not on the public label: two distinct
@@ -382,7 +404,7 @@ struct Index {
         epoch: peer.epoch, name: hidePhoneName(peer.name, peer.role || 'chat'), id: id, ready: peer.ready, jobs: count,
         role: peer.role, model: stats?.model, memUsage: stats?.memUsage,
         thermalLevel: stats?.thermalLevel, batteryTemp: stats?.batteryTemp, cpuUsage: stats?.cpuUsage,
-        modelRequests: stats?.modelRequests
+        modelRequests: stats?.modelRequests, capabilities: stats?.capabilities
       });
     }
     for (const extra of this.remoteEntries()) {
@@ -410,7 +432,7 @@ struct Index {
         epoch: -1, name: name, id: id || name, ready: extra.ready !== false, jobs: 0,
         role: role, model: extra.model, memUsage: extra.memUsage,
         thermalLevel: extra.thermalLevel, batteryTemp: extra.batteryTemp, cpuUsage: extra.cpuUsage,
-        modelRequests: extra.modelRequests
+        modelRequests: extra.modelRequests, capabilities: extra.capabilities
       });
     }
     const views: JobView[] = [];
@@ -484,7 +506,10 @@ struct Index {
 
   private cancelDroppedPeers(): void {
     for (const job of this.jobs.slice()) {
-      if (job.peer && !this.channel.hasEpoch(job.epoch) && job.workerEpoch === 0) this.model?.cancel(job.key);
+      if (job.peer && !this.channel.hasEpoch(job.epoch) && job.workerEpoch === 0) {
+        this.model?.cancel(job.key);
+        this.vlTransport?.cancel();
+      }
     }
     const peers = this.channel.peerInfos();
     const live: number[] = [];
@@ -527,6 +552,19 @@ struct Index {
 
   private localBusy(): boolean {
     return this.jobs.some((item: ActiveJob) => !item.peer);
+  }
+
+  /** 聊天轨道同一时刻只服务一张卡片：本机任务 + Hub 自己转发出去的请求。 */
+  private railBusy(): boolean {
+    return this.jobs.some((item: ActiveJob) => !item.peer || item.epoch === 0);
+  }
+
+  private selfMeetsNeeds(needs: string[]): boolean {
+    const caps = this.selfEntry().capabilities || [];
+    for (const need of needs) {
+      if (caps.indexOf(need) < 0) return false;
+    }
+    return true;
   }
 
   private recentMessages(question: string): ChatMessage[] {
@@ -573,13 +611,25 @@ struct Index {
     const messages = this.recentMessages(question);
     const id = util.generateRandomUUID();
     if (IS_SERVER) {
-      const image = this.pendingImage;
+      // 管线内使用裸 base64：wire 校验与 LocalChat 都不认 data: 前缀。
+      const image = jpegBase64Payload(this.pendingImage);
+      const needs: string[] = image.length > 0 ? ['vision'] : [];
+      // G5：Hub 自身请求仅在本地能力不足时交给调度（如带图而本地是纯文本模型）；
+      // 纯文本仍本机直答，聊天轨道的取消/历史行为保持不变。
+      if (needs.length > 0 && !this.selfMeetsNeeds(needs)) {
+        if (this.railBusy()) return '模型正在回答上一条问题，请稍后再发。';
+        const error = this.scheduleRequest(id, messages, 0, false, this.selfComputeLabel(), needs, image);
+        if (error) return error;
+        if (this.webActiveId.length === 0) this.webActiveId = id;
+        this.pendingImage = '';
+        return '';
+      }
       const error = this.startLocal(id, messages, false, 0, image);
       if (error) return error;
       this.pendingImage = '';
     } else {
       this.activeId = id; this.answer = ''; this.question = question;
-      this.channel?.send({ type: 'request', requestId: id, messages: messages }).then((sent: boolean) => {
+      this.channel?.send({ type: 'request', requestId: id, messages: messages, needs: [] }).then((sent: boolean) => {
         if (!sent && this.activeId === id) this.finish('发送失败，请连接后重试。', true);
       });
     }
@@ -596,12 +646,20 @@ struct Index {
   }
 
   /** `key` is the board identity of the job; it also keys local cancellation. */
-  private startModel(key: string, messages: ChatMessage[]): string {
+  private startModel(key: string, messages: ChatMessage[], image: string = ''): string {
+    // 带图 → VL 引擎（NPU 多模态）；纯文本 → GEWU 文本引擎（LocalChat）。
+    // 带图请求绝不降级发给纯文本引擎：VL 通道不可用时报错，由调度层决定是否转投远端。
+    if (image.length > 0 && this.vlTransport !== null) {
+      return this.vlTransport.start(messages, (update: ChatUpdate) => this.localUpdate(key, update), key, image);
+    }
+    // 任务切到纯文本：先卸载驻留的 VL 权重（约 5.3GB）。否则 GEWU 再加载 5.8GB 文本模型
+    // 会超过本机内存（MemTotal 15.8GB），被系统低内存杀手杀掉进程——真机实测。
+    QwenVlManager.getInstance().unloadIfIdle();
     if (this.transport !== null) {
-      return this.transport.start(messages, (update: ChatUpdate) => this.localUpdate(key, update), key);
+      return this.transport.start(messages, (update: ChatUpdate) => this.localUpdate(key, update), key, image);
     }
     if (!this.model) return '模型服务尚未初始化。';
-    return this.model.start(messages, (update: ChatUpdate) => this.localUpdate(key, update), key);
+    return this.model.start(messages, (update: ChatUpdate) => this.localUpdate(key, update), key, { image: image });
   }
 
   private queueJob(id: string, messages: ChatMessage[]): string {
@@ -659,8 +717,8 @@ struct Index {
     return '';
   }
 
-  private chooseNode(nodes: ScheduleNode[], originEpoch: number): ScheduleNode | null {
-    if (this.routeMode !== 'split') return pickRoute(nodes, this.routeMode, true);
+  private chooseNode(nodes: ScheduleNode[], originEpoch: number, needs: string[] = []): ScheduleNode | null {
+    if (this.routeMode !== 'split') return pickRoute(nodes, this.routeMode, true, needs);
     const prior = this.splitTarget.get(originEpoch);
     let preferSelf = true;
     if (prior === 2) preferSelf = false;
@@ -671,7 +729,7 @@ struct Index {
       });
       preferSelf = !peerTaken;
     }
-    const node = pickRoute(nodes, 'split', preferSelf);
+    const node = pickRoute(nodes, 'split', preferSelf, needs);
     if (node !== null && prior !== 1 && prior !== 2) this.splitTarget.set(originEpoch, node.isSelf ? 1 : 2);
     return node;
   }
@@ -787,6 +845,9 @@ struct Index {
     own.ready = this.model !== null && !!self.model && self.model.length > 0;
     own.inflight = Math.max(self.modelRequests === undefined ? 0 : self.modelRequests, this.inference?.isActive() ? 1 : 0);
     own.memAvail = self.memAvail === undefined ? -1 : self.memAvail;
+    // 能力必须透传给转发决策：infer 侧按它做硬门槛（见 pickIdleFor）。
+    own.capabilities = self.capabilities !== undefined && self.capabilities.length > 0 ?
+      self.capabilities : ['text'];
     nodes.push(own);
     const peers = this.channel.peerInfos();
     for (const peer of peers) {
@@ -798,6 +859,8 @@ struct Index {
       node.ready = !!stats && !!stats.model && stats.model.length > 0;
       node.inflight = this.router.workerLoad(peer.epoch, stats?.modelRequests === undefined ? 0 : stats.modelRequests);
       node.memAvail = stats?.memAvail === undefined ? -1 : stats.memAvail;
+      node.capabilities = stats !== undefined && stats.capabilities !== undefined &&
+        stats.capabilities.length > 0 ? stats.capabilities : ['text'];
       nodes.push(node);
     }
     return nodes;
@@ -826,7 +889,7 @@ struct Index {
     if (this.webActiveId.length === 0) this.webActiveId = id;
     if (peer) this.router.beginSelf();
     const key = Index.jobKey(epoch, id);
-    const error = this.startModel(key, messages);
+    const error = this.startModel(key, messages, image);
     if (error) {
       if (peer) this.router.endSelf();
       if (this.webActiveId === id) this.webActiveId = '';
@@ -867,6 +930,7 @@ struct Index {
       node.name = '本机';
       node.isSelf = true;
       node.model = self.model;
+      node.capabilities = self.capabilities || [];
       node.requests = self.modelRequests === undefined ? 0 : self.modelRequests;
       node.memAvail = self.memAvail === undefined ? -1 : self.memAvail;
       nodes.push(node);
@@ -881,6 +945,7 @@ struct Index {
       node.epoch = peer.epoch;
       node.name = peer.name;
       node.model = model;
+      node.capabilities = stats?.capabilities || [];
       node.requests = this.router.workerLoad(peer.epoch, stats?.modelRequests === undefined ? 0 : stats.modelRequests);
       node.memAvail = stats?.memAvail === undefined ? -1 : stats.memAvail;
       nodes.push(node);
@@ -889,17 +954,19 @@ struct Index {
   }
 
   private scheduleRequest(id: string, messages: ChatMessage[], originEpoch: number, sched: boolean,
-    forwardedOrigin: string = ''): string {
-    if (sched) return this.startLocal(id, messages, true, originEpoch, '', forwardedOrigin || '聊天设备');
+    forwardedOrigin: string = '', needs: string[] = [], image: string = ''): string {
+    if (sched) return this.startLocal(id, messages, true, originEpoch, image, forwardedOrigin || '聊天设备');
     if (this.channel.selfComputeNumber() !== 1) return '请连接算力设备1，由它统一调度。';
     const nodes = this.scheduleNodes();
-    const node = this.chooseNode(nodes, originEpoch);
+    const node = this.chooseNode(nodes, originEpoch, needs);
     if (node === null) {
       if (this.routeMode === 'pin1') return '实验路由找不到算力设备1。';
       if (this.routeMode === 'pin2') return '实验路由找不到算力设备2。';
+      // 有带模型的设备却选不出，只能是能力不满足：绝不降级发给不具备能力的设备。
+      if (needs.length > 0 && nodes.length > 0) return '集群中没有支持' + needsLabel(needs) + '的设备。';
       return '集群中无已部署模型的可用设备。';
     }
-    if (node.isSelf) return this.startLocal(id, messages, true, originEpoch, '', '', this.routeMode);
+    if (node.isSelf) return this.startLocal(id, messages, true, originEpoch, image, '', this.routeMode);
     const entry = new DispatchEntry();
     entry.originEpoch = originEpoch;
     entry.originRequestId = id;
@@ -908,12 +975,14 @@ struct Index {
     // The forwarded id is ours, not the origin's: the worker echoes it back
     // verbatim and that is the only way to tell two same-id requests apart.
     const dispatch = this.router.beginDispatch(id, entry);
-    const job = this.createJob(id, messages, true, originEpoch, node.epoch, '', '', this.routeMode);
+    const job = this.createJob(id, messages, true, originEpoch, node.epoch, image,
+      originEpoch === 0 ? this.selfComputeLabel() : '', this.routeMode);
     this.jobs.push(job);
     this.logRoute(job);
     this.emitDashboard();
     this.channel.send({
-      type: 'request', requestId: dispatch.forwardId, messages: messages, sched: true, origin: job.origin
+      type: 'request', requestId: dispatch.forwardId, messages: messages, sched: true,
+      origin: job.origin, needs: needs, image: image
     }, node.epoch)
       .then((sent: boolean) => {
         if (sent) return;
@@ -933,7 +1002,10 @@ struct Index {
       return;
     }
     const job = this.findJob(id, epoch);
-    if (job !== undefined && job.peer && job.epoch === epoch) this.model?.cancel(job.key);
+    if (job !== undefined && job.peer && job.epoch === epoch) {
+      this.model?.cancel(job.key);
+      this.vlTransport?.cancel(); // VL 引擎为单任务，引擎级取消即覆盖该卡
+    }
   }
 
   private handleWorkerReply(message: WireMessage, epoch: number): void {
@@ -948,27 +1020,43 @@ struct Index {
 
   private routeWorkerReply(message: WireMessage, dispatch: DispatchEntry, forwardId: string): void {
     const id = dispatch.originRequestId;
+    // originEpoch 0 = Hub 自己的请求被转发：回复不走出链接，直接回流聊天轨道。
+    const selfOrigin = dispatch.originEpoch === 0;
     if (message.type === 'delta') {
       const job = this.findJob(id, dispatch.originEpoch);
       if (job === undefined) return;
       job.answer += message.text || '';
       if (job.firstAt === 0) job.firstAt = Date.now();
       this.emitDashboard();
-      this.channel.send({ type: 'delta', requestId: id, text: message.text || '' }, dispatch.originEpoch);
+      if (selfOrigin) {
+        if (this.webActiveId === id) this.emit({ kind: 'text', text: job.answer, requestId: id });
+      } else {
+        this.channel.send({ type: 'delta', requestId: id, text: message.text || '' }, dispatch.originEpoch);
+      }
       return;
     }
     const job = this.router.finishForward(forwardId) === undefined ? undefined : this.findJob(id, dispatch.originEpoch);
     if (message.type === 'error') {
-      this.channel.send({ type: 'error', requestId: id, error: message.error || '执行设备推理失败' },
-        dispatch.originEpoch);
+      if (!selfOrigin) {
+        this.channel.send({ type: 'error', requestId: id, error: message.error || '执行设备推理失败' },
+          dispatch.originEpoch);
+      }
       this.completeJob(id, dispatch.originEpoch, message.error || '执行设备推理失败', true);
       return;
     }
-    this.channel.send({
-      type: 'done', requestId: id, finishReason: message.finishReason,
-      source: workerTail(dispatch.workerEpoch, this.channel.peerInfos(), this.selfComputeLabel())
-    }, dispatch.originEpoch);
-    this.completeJob(id, dispatch.originEpoch, job === undefined ? '' : job.answer, false);
+    if (!selfOrigin) {
+      this.channel.send({
+        type: 'done', requestId: id, finishReason: message.finishReason,
+        source: workerTail(dispatch.workerEpoch, this.channel.peerInfos(), this.selfComputeLabel())
+      }, dispatch.originEpoch);
+    } else if (job !== undefined && message.finishReason !== 'cancelled') {
+      // 与本地执行路径一致：完成的对话回填历史，供后续多轮上下文使用。
+      this.history.push({ role: 'user', content: job.question });
+      this.history.push({ role: 'assistant', content: job.answer });
+    }
+    const stopped = message.finishReason === 'cancelled';
+    this.completeJob(id, dispatch.originEpoch, job === undefined ? '' :
+      (stopped && job.answer.length > 0 ? job.answer + '\n\n已停止生成' : job.answer), false);
   }
 
   private handleDeviceInfo(message: WireMessage, epoch: number): void {
@@ -977,7 +1065,7 @@ struct Index {
       message.cpuUsage !== undefined) {
       let entry = this.peerStats.get(epoch);
       if (entry === undefined) {
-        entry = { role: this.channel.peerRole(epoch) || 'compute' };
+        entry = { role: this.channel.peerRole(epoch) || 'compute', capabilities: [] };
       }
       applyDeviceInfo(entry, message);
       this.peerStats.set(epoch, entry);
@@ -1091,7 +1179,8 @@ struct Index {
         model: stats?.model, memUsage: stats?.memUsage, memAvail: stats?.memAvail,
         memTotal: stats?.memTotal, thermalLevel: stats?.thermalLevel,
         batteryTemp: stats?.batteryTemp, cpuUsage: stats?.cpuUsage,
-        modelRequests: stats?.modelRequests
+        modelRequests: stats?.modelRequests,
+        capabilities: stats?.capabilities || []
       };
       if (peer.role === 'chat' && peer.slot > 0) entry.slot = peer.slot;
       if (peer.role === 'compute' && peer.slot > 0) entry.slot = peer.slot;
@@ -1105,7 +1194,8 @@ struct Index {
     // Topology is control traffic: membership changes must reach joining nodes
     // during inference too. Strip telemetry/name duplication to keep it small.
     const compact = cluster.map((entry: DeviceInfoEntry): DeviceInfoEntry => ({
-      id: entry.deviceUid || entry.id, role: entry.role, slot: entry.slot, ready: entry.ready
+      id: entry.deviceUid || entry.id, role: entry.role, slot: entry.slot, ready: entry.ready,
+      capabilities: entry.capabilities || []
     }));
     // Publish only self and direct peers. Re-forwarding another compute's roster
     // created a cycle in which a disconnected chat survived forever as a ghost.
@@ -1128,11 +1218,13 @@ struct Index {
           if (!sent) { delivery.signature = ''; return; }
           if (!busy) delivery.lastFullAt = Date.now();
           if (this.jobs.length === 0 && this.channel.hasEpoch(peer.epoch)) {
-            this.channel.send({ type: 'deviceInfo', requestId: 'info-' + String(peer.epoch) }, peer.epoch);
+            // The empty info frame is only a poll: capabilities must stay declared
+            // because validDeviceInfo requires the field on every deviceInfo wire.
+            this.channel.send({ type: 'deviceInfo', requestId: 'info-' + String(peer.epoch), capabilities: [] }, peer.epoch);
           }
         });
       } else if (!busy) {
-        this.channel.send({ type: 'deviceInfo', requestId: 'info-' + String(peer.epoch) }, peer.epoch);
+        this.channel.send({ type: 'deviceInfo', requestId: 'info-' + String(peer.epoch), capabilities: [] }, peer.epoch);
       }
     }
     this.emitDashboard();
@@ -1201,7 +1293,7 @@ struct Index {
         this.replyDeviceInfo(message.requestId, epoch);
       } else if (message.type === 'request' && message.messages && message.requestId) {
         const error = this.scheduleRequest(message.requestId, message.messages, epoch, message.sched === true,
-          message.origin || '');
+          message.origin || '', message.needs || [], message.image || '');
         if (error) this.channel?.send({ type: 'error', requestId: message.requestId, error: error }, epoch);
       } else if (message.type === 'cancel' && message.requestId) {
         this.handleCancel(message.requestId, epoch);
@@ -1278,7 +1370,14 @@ struct Index {
   private stop(): void {
     if (IS_SERVER) {
       const local = this.jobs.find((item: ActiveJob) => !item.peer);
-      if (local !== undefined) this.model?.cancel(local.key);
+      if (local !== undefined) {
+        this.model?.cancel(local.key);
+        this.vlTransport?.cancel(); // VL 引擎为单任务，引擎级取消即覆盖本地卡
+        return;
+      }
+      // Hub 自己转发出去的请求：按转发句柄取消远端执行。
+      const forwarded = this.jobs.find((item: ActiveJob) => item.peer && item.epoch === 0);
+      if (forwarded !== undefined) this.handleCancel(forwarded.id, 0);
       return;
     }
     if (!this.activeId) return;
@@ -1293,7 +1392,7 @@ struct Index {
       Web({ src: $rawfile('peer-chat.html'), controller: this.controller })
         .javaScriptAccess(true)
         .domStorageAccess(false)
-        .javaScriptProxy({ object: this.bridge, name: 'chatBridge', methodList: ['send', 'stop', 'connect', 'prepare', 'pickImage', 'clear'], controller: this.controller })
+        .javaScriptProxy({ object: this.bridge, name: 'chatBridge', methodList: ['send', 'stop', 'connect', 'prepare', 'pickImage', 'clear', 'clearImage'], controller: this.controller })
         .onPageEnd(() => {
           this.pageReady = true;
           this.channel.subscribe(

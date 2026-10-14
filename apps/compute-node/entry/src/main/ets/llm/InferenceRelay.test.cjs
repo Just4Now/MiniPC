@@ -69,6 +69,38 @@ test('busy hub forwards to the idle worker with a hub forwardId and reduced budg
   assert.equal(forwarded.maxOutputTokens, 512);
   assert.equal(h.events[0][0], 'begin');
 });
+test('an image request keeps its image across the hub hand-off', () => {
+  // 带图 ⇒ 只有声明了 vision 的节点才可选（见 pickIdleFor）
+  const h = harness([self({ inflight: 1, capabilities: ['text'] }),
+    worker({ capabilities: ['text', 'vision'] })]);
+  const image = '/9j/4AAQSkZJRg==';
+  h.relay.handleFromChat({ ...request('r1'), image: image }, 5);
+  assert.equal(h.to(7, 'infer.request')[0].image, image);
+  // 无图请求绝不能带 image 键：undefined 也算键，对端 hasOnly 会判为未知字段并拒收
+  const plain = harness([self({ inflight: 1 }), worker()]);
+  plain.relay.handleFromChat(request('r2'), 5);
+  assert.equal('image' in plain.to(7, 'infer.request')[0], false);
+});
+test('a vision request is never handed to a text-only worker', () => {
+  // hub 忙、worker 只有文本能力：带图请求必须 fail closed，不得转发、不得本地降级
+  const h = harness([self({ inflight: 1, capabilities: ['text'] }), worker({ capabilities: ['text'] })]);
+  h.relay.handleFromChat({ ...request('r1'), image: '/9j/4AAQSkZJRg==' }, 5);
+  assert.equal(h.to(7, 'infer.request').length, 0, 'text-only worker is not chosen for an image');
+  assert.equal(h.localHandled.length, 0, 'the text-only hub does not serve it locally either');
+  const refusal = h.to(5, 'infer.error')[0];
+  assert.equal(refusal.code, 'MODEL_UNAVAILABLE');
+  assert.equal(refusal.retryable, false, 'retrying without a capable node is pointless');
+});
+test('a text request is not handed to a vision-only node', () => {
+  const h = harness([self({ inflight: 1, capabilities: ['text'] }), worker({ capabilities: ['vision'] })]);
+  h.relay.handleFromChat(request('r1'), 5);
+  assert.equal(h.to(7, 'infer.request').length, 0, 'vision-only worker is not chosen for text');
+});
+test('the idle hub still serves a vision request itself when it is capable', () => {
+  const h = harness([self({ inflight: 0, capabilities: ['text', 'vision'] }), worker()]);
+  h.relay.handleFromChat({ ...request('r1'), image: '/9j/4AAQSkZJRg==' }, 5);
+  assert.deepEqual(h.localHandled, [['infer.request', 'r1', 5]]);
+});
 test('two simultaneous requests never share one idle device; third is retryable BUSY', () => {
   const h = harness([self({ inflight: 1 }), worker()]);
   h.relay.handleFromChat(request('a'), 5);

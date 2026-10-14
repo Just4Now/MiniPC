@@ -489,7 +489,7 @@ function scan(t) {
       error.code = 32390206;
       throw error;
     };
-    const rejected = t.channel.send({ type: 'deviceInfo', requestId: 'send-error' });
+    const rejected = t.channel.send({ type: 'deviceInfo', requestId: 'send-error', capabilities: [] });
     await advance(400);
     assert.equal(await rejected, false);
     assert(t.channel.isConnected(), '32390206 must not tear down a healthy connection');
@@ -607,6 +607,44 @@ function scan(t) {
     t.channel.selfComputeSlot = 2;
     await scan(t);
     assert.equal(t.connections.length, 1, 'the worker initiates connection to advertised slot 1');
+  }
+
+  // --- 4d2. A dialled worker never elects itself hub before the hub's roster lands.
+  // The two boxes sample memAvail at different moments and a VL hub reads lower
+  // than an idle text box, so a naive memory election at the 10 s timer would crown
+  // both boxes slot 1 and the hub-side prune tears the healthy link down (E69D0195
+  // after ~9 s in the field log). The dialled side must join the peer, not re-elect.
+  {
+    const t = build(true, 'dialled-worker-joins-hub');
+    t.behavior.localName = '算力设备0';
+    t.behavior.devices = [{ deviceId: 'hub', deviceName: '算力设备1', networkId: 'hub-net' }];
+    t.behavior.names = { 'aa:bb:cc:dd:ee:66': '算力设备1' };
+    t.behavior.scanData = [{ deviceId: 'aa:bb:cc:dd:ee:66', deviceName: '', rssi: -40,
+      data: new Uint8Array([5, 0xFF, 0x77, 0x6E, 1, 1]).buffer }];
+    await t.channel.prepare();
+    await scan(t);
+    const link = outgoing(t);
+    assert(link !== undefined, 'the worker dials the advertised hub');
+    // The link is up and the worker's hello went out, but the hub's hello_ack has
+    // NOT assigned a slot yet (the hub was still unelected at handshake time) and
+    // no roster has arrived. The peer is ready; the election timer fires anyway...
+    link.deliver(t.modules.protocol.encodeMessage({
+      type: 'hello_ack', peerRole: 'compute', name: '算力设备1', deviceUid: 'hub-uid-66'
+    }, 'd2-ack')[0]);
+    await flush();
+    const hubPeer = t.channel.peers.find(p => p.role === 'compute' && !p.fromServer);
+    assert(hubPeer !== undefined && hubPeer.ready, 'the dialled peer link is ready');
+    assert.equal(hubPeer.computeSlot, 0, 'the hub has not yet assigned a slot');
+    t.channel.meshSettled = true;
+    // A VL hub reports lower free memory than this idle text box. A memAvail-based
+    // election would place this worker first; the fix must keep it a follower.
+    t.channel.setSelfMem(9000);
+    t.channel.setPeerMem(t.channel.peers[0].epoch, 2000);
+    await advance(10000); // election timer fires inside this window
+    assert.equal(t.channel.selfComputeNumber(), 2,
+      'a dialled worker adopts the hub-first view instead of crowning itself slot 1');
+    assert.equal(new Uint8Array(t.advertise.manufactureData[0].manufactureValue)[1], 2,
+      'the follower advertises slot 2, never a duplicate slot 1');
   }
 
   // --- 4e. A stopped hub is replaced only after repeated absence checks -------

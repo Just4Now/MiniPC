@@ -1,6 +1,13 @@
 import { util } from '@kit.ArkTS';
 
 export interface ChatMessage { role: string; content: string; }
+/** Capability vocabulary shared by device declarations and request needs. */
+export const CAPABILITY_TAGS: string[] = ['text', 'vision'];
+/**
+ * 图片随请求传输的裸 base64 上限（无 data: 前缀）。约束链：分片层 MAX_FRAME 64KiB、
+ * 原生 NAPI 入参 64KiB——24000 字符 base64（约 18KB JPEG）加消息文本后两侧都留有余量。
+ */
+export const MAX_IMAGE_BASE64: number = 24000;
 export interface DeviceInfoEntry {
   id?: string;
   /** Stable per-install identity. `id` remains for compatibility with older builds. */
@@ -18,6 +25,11 @@ export interface DeviceInfoEntry {
   cpuUsage?: number;
   model?: string;
   modelRequests?: number;
+  /**
+   * 部署声明的模型能力，如 ['text', 'vision']。
+   * 缺省 = 老对端（v1）未声明，按纯文本处理。
+   */
+  capabilities?: string[];
   ready?: boolean;
   slot?: number;
 }
@@ -43,6 +55,11 @@ export interface WireMessage {
   cpuUsage?: number;
   model?: string;
   modelRequests?: number;
+  capabilities?: string[];
+  /** Capabilities a request needs; routing fails closed when no device has them. */
+  needs?: string[];
+  /** 本次请求携带的 JPEG 图片，裸 base64（无 data: 前缀）；带图请求必须需要 vision。 */
+  image?: string;
   devices?: DeviceInfoEntry[];
   slot?: number;
   /** Stable per-install identity exchanged during hello/roster sync. */
@@ -101,6 +118,16 @@ export interface InferProfile {
   cluster?: ClusterInfo;
 }
 
+/**
+ * 协议号保持 v1。
+ *
+ * 收发两端都用精确匹配校验（`m.protocol !== PROTOCOL` 即拒收），而聊天端
+ * apps/agent-client 与 legacy/* 目前都还是 v1。本次只改 apps/compute-node，
+ * 若在此升到 v2，两边会互相拒收**全部**消息（不只是带图请求）。
+ *
+ * 多模态需要的能力/需求/图片字段都是**可选追加**，v1 对端的校验只检查已知字段、
+ * 会忽略它们，因此不需要升号。等聊天端一起升级时再统一改这里。
+ */
 const PROTOCOL = 'nearby-chat-v1';
 const MAX_FRAME = 65536;
 
@@ -110,6 +137,21 @@ function validOptionalString(value: string | undefined, max: number): boolean {
 
 function validOptionalNumber(value: number | undefined): boolean {
   return value === undefined || (typeof value === 'number' && Number.isFinite(value));
+}
+
+/**
+ * 能力清单：已知标签组成的数组，长度上限 `max`。
+ *
+ * `undefined` 合法 = 对端未声明能力，按纯文本处理；路由侧 meetsNeeds 会因此
+ * fail closed，绝不会把带图请求交给它。这样 v1 对端（不带该字段）仍能互通。
+ */
+function validCapabilities(value: string[] | undefined, max: number): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length > max) return false;
+  for (const tag of value) {
+    if (typeof tag !== 'string' || CAPABILITY_TAGS.indexOf(tag) < 0) return false;
+  }
+  return true;
 }
 
 function validDeviceEntry(entry: DeviceInfoEntry): boolean {
@@ -122,6 +164,7 @@ function validDeviceEntry(entry: DeviceInfoEntry): boolean {
     validOptionalNumber(entry.batteryTemp) && validOptionalNumber(entry.cpuUsage) &&
     validOptionalString(entry.model, 128) &&
     validOptionalNumber(entry.modelRequests) &&
+    validCapabilities(entry.capabilities, 8) &&
     (entry.ready === undefined || typeof entry.ready === 'boolean') &&
     (entry.slot === undefined || (Number.isInteger(entry.slot) && entry.slot >= 1 && entry.slot <= 64));
 }
@@ -131,7 +174,7 @@ function validDeviceInfo(m: WireMessage): boolean {
     validOptionalNumber(m.memTotal) && validOptionalNumber(m.memAvail) &&
     validOptionalNumber(m.memUsage) && validOptionalNumber(m.thermalLevel) &&
     validOptionalNumber(m.batteryTemp) && validOptionalNumber(m.cpuUsage) &&
-    validOptionalNumber(m.modelRequests) &&
+    validOptionalNumber(m.modelRequests) && validCapabilities(m.capabilities, 8) &&
     (m.peerRole === undefined || m.peerRole === 'compute' || m.peerRole === 'chat');
 }
 
@@ -169,6 +212,13 @@ export function validMessage(m: WireMessage): boolean {
   if (m.type.indexOf('infer.') === 0) return validInference(m);
   if (m.type !== 'request' || !Array.isArray(m.messages) || m.messages.length === 0 || m.messages.length > 7) return false;
   if (m.sched !== undefined && m.sched !== true && m.sched !== false) return false;
+  if (!validCapabilities(m.needs, 4)) return false;
+  // 带图请求必须声明 vision 需求：保证能力路由永远不把图片交给纯文本设备。
+  if (m.image !== undefined) {
+    if (typeof m.image !== 'string' || m.image.length === 0 || m.image.length > MAX_IMAGE_BASE64 ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(m.image)) return false;
+    if (m.needs === undefined || m.needs.indexOf('vision') < 0) return false;
+  }
   if (!validOptionalString(m.origin, 128)) return false;
   let length = 0;
   for (const message of m.messages) {
@@ -199,6 +249,12 @@ function validInference(m: WireMessage): boolean {
   if (typeof m.requestId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(m.requestId)) return false;
   if (m.prompt !== undefined && (typeof m.prompt !== 'string' ||
     new util.TextEncoder().encodeInto(m.prompt).length > 32768)) return false;
+  // infer 通道的可选附图：与 nearby-chat request 同一条约束（裸 base64、无 data: 前缀、
+  // 受 MAX_IMAGE_BASE64 限制）。缺这道校验，畸形/超长图片会绕过协议层直达 VL 引擎。
+  if (m.image !== undefined) {
+    if (typeof m.image !== 'string' || m.image.length === 0 || m.image.length > MAX_IMAGE_BASE64 ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(m.image)) return false;
+  }
   if (m.text !== undefined && (typeof m.text !== 'string' ||
     new util.TextEncoder().encodeInto(m.text).length > 1024)) return false;
   if (m.message !== undefined && (typeof m.message !== 'string' || m.message.length > 1024)) return false;

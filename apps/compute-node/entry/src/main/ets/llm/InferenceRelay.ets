@@ -1,7 +1,7 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ChatMessage, ClusterInfo, WireMessage } from '../protocol/ChatProtocol';
 import { ComputeRouter, DispatchEntry } from '../cluster/ComputeRouter';
-import { PoolNode, clusterLoad, pickIdle } from '../cluster/DevicePool';
+import { PoolNode, clusterLoad, meetsCapabilities, pickIdle, pickIdleFor } from '../cluster/DevicePool';
 
 /** Time the hub keeps for relaying; the worker gets the requester's budget minus this. */
 const RELAY_MARGIN_MS = 5000;
@@ -152,9 +152,20 @@ export class InferenceRelay {
       this.refuse(id, chatEpoch, 'DUPLICATE_REQUEST', '请求编号重复', false);
       return;
     }
-    const target = pickIdle(this.nodes());
+    // 从请求本身推导能力需求（不改协议：infer.request 的白名单没变）。
+    // 带图 ⇒ 执行节点必须具备 vision；否则按纯文本。
+    const needs: string[] = message.image !== undefined && message.image.length > 0 ?
+      ['vision'] : ['text'];
+    const pool = this.nodes();
+    const target = pickIdleFor(pool, needs);
     if (target === null) {
-      this.refuse(id, chatEpoch, 'BUSY', '算力繁忙，请稍后重试', true);
+      // 区分「没有具备该能力的节点」（重试无意义）与「有但都忙」（可重试）。
+      const capable = pool.some((item: PoolNode): boolean => item.ready && meetsCapabilities(item, needs));
+      if (capable) {
+        this.refuse(id, chatEpoch, 'BUSY', '算力繁忙，请稍后重试', true);
+      } else {
+        this.refuse(id, chatEpoch, 'MODEL_UNAVAILABLE', '没有可执行该任务的算力设备', false);
+      }
       return;
     }
     if (target.isSelf) {
@@ -244,6 +255,7 @@ export class InferenceRelay {
     if (message.promptFormat !== undefined) copy.promptFormat = message.promptFormat;
     if (message.prompt !== undefined) copy.prompt = message.prompt;
     if (message.messages !== undefined) copy.messages = message.messages;
+    if (message.image !== undefined) copy.image = message.image;
     if (message.label !== undefined) copy.label = message.label;
     if (message.maxOutputTokens !== undefined) copy.maxOutputTokens = message.maxOutputTokens;
     if (typeof message.deadlineBudgetMs === 'number') {

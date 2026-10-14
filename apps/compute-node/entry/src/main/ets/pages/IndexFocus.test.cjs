@@ -55,6 +55,15 @@ function setup(isServer) {
       cancel(id) { this.chat.cancel(id); }
       readinessError() { return this.chat.readinessError(); }
     } };
+    if (name === '../llm/VlLlmTransport') return { VlLlmTransport: class {
+      constructor() { this.starts = 0; }
+      start(messages, cb, id, image) { this.starts++; return image && image.length > 0 ? '' : 'no image'; }
+      cancel() {} readinessError() { return ''; } isBusy() { return false; }
+    } };
+    if (name === '../llm/QwenVlManager') return { QwenVlManager: { getInstance: () => ({
+      init() {}, isModelEnabled: () => false, getDeployedModelName: () => '', readinessError: () => '',
+      isBusy: () => false, unloadIfIdle() {}
+    }) } };
     if (name === '../cluster/ComputeRouter') {
       return loadEts(__dirname + '/../cluster/ComputeRouter.ets');
     }
@@ -79,7 +88,7 @@ function setup(isServer) {
       buildSelfEntry(_dir, running) {
         return { name: '本机', id: 'self', role: 'self', model: 'Qwen2.5-7B-Instruct-Q4_N_0',
           modelRequests: running, memUsage: 10, memAvail: 1000, memTotal: 2000,
-          thermalLevel: 2, batteryTemp: 42, cpuUsage: 18 };
+          thermalLevel: 2, batteryTemp: 42, cpuUsage: 18, capabilities: ['text', 'vision'] };
       },
       deployedModelName: () => 'Qwen2.5-7B-Instruct-Q4_N_0',
       formatComputeStatus: () => 'Qwen',
@@ -89,7 +98,10 @@ function setup(isServer) {
         cpuUsage: entry.cpuUsage, modelRequests: entry.modelRequests, peerRole: 'compute'
       })
     };
-    if (name === '../media/ImageAttach') return { pickJpegDataUrl: async () => '' };
+    if (name === '../media/ImageAttach') return {
+      pickJpegDataUrl: async () => '',
+      jpegBase64Payload: d => d.indexOf('data:image/jpeg;base64,') === 0 ? d.slice('data:image/jpeg;base64,'.length) : d
+    };
     return {};
   } };
   let source = fs.readFileSync(__dirname + '/Index.ets', 'utf8');
@@ -518,3 +530,76 @@ function setup(isServer) {
   assert(status.text.includes('等待它自动重连'), 'a lost chat link says who has to re-dial: ' + status.text);
   console.log('PASS: status push defers to inference; a lost chat link is reported as the chat side\'s to re-dial');
 }
+
+// 带图请求在算力端必须分流到 VL 引擎，而不是纯文本 GEWU 通道。
+{
+  const s = setup(true);
+  s.page.pageReady = true;
+  s.page.serviceReady = true;
+  let vlStarts = 0, gewuStarts = 0, lastVlImage = null;
+  s.page.vlTransport = { start(messages, cb, id, image) { vlStarts++; lastVlImage = image; return ''; }, cancel() {} };
+  s.page.transport = { start() { gewuStarts++; return ''; }, cancel() {}, readinessError() { return ''; } };
+  const err = s.page.startModel('0:local', [{ role: 'user', content: '这张图里有什么' }], 'QUJD');
+  assert.equal(err, '', 'VL enabled hub accepts the local image request');
+  assert.equal(vlStarts, 1, '带图请求走 VL 引擎而非 GEWU');
+  assert.equal(gewuStarts, 0, '纯文本通道绝不该收到带图请求');
+  assert.equal(lastVlImage, 'QUJD', 'VL 通道收到的是裸 base64（管线内格式）');
+
+  // 无图时仍走普通文本通道。
+  s.page.vlTransport = { start() { vlStarts++; return ''; }, cancel() {} };
+  const textErr = s.page.startModel('0:text', [{ role: 'user', content: 'hi' }], '');
+  assert.equal(textErr, '', 'plain text still goes through the GEWU transport');
+  assert.equal(vlStarts, 1, '纯文本绝不触发 VL 引擎');
+  assert.equal(gewuStarts, 1, '纯文本走 GEWU transport');
+  console.log('PASS: image requests route to the VL engine, text stays on GEWU');
+}
+
+// Hub 自身发图：本机能力不足时走集群调度，具备 vision 能力时本机直答 VL。
+{
+  const hub = setup(true);
+  hub.page.pageReady = true;
+  hub.page.serviceReady = true;
+  hub.page.pendingImage = 'data:image/jpeg;base64,QUJD';
+  hub.page.vlTransport = { start(messages, cb, id, image) { hub.vlImage = image; return ''; }, cancel() {} };
+  hub.page.model = { activeCount() { return 0; }, cancel() {}, readinessError() { return ''; } };
+  hub.channel.peerInfos = () => [];
+  // selfMeetsNeeds(['vision'])：mock buildSelfEntry 已声明 capabilities=['text','vision']。
+  const err = hub.page.send('看图说话');
+  assert.equal(err, '', 'hub with local vision answers directly');
+  assert.equal(hub.vlImage, 'QUJD', 'hub sends the bare base64 to the local VL engine');
+
+  // 本机无 vision 能力 → 集群无合格节点 → fail closed 提示。
+  const weak = setup(true);
+  weak.page.pageReady = true;
+  weak.page.serviceReady = true;
+  weak.page.pendingImage = 'data:image/jpeg;base64,QUJD';
+  weak.page.vlTransport = null;
+  // 覆盖本机能力声明：纯文本模型（只具备 text），模拟"带图但本机是纯文本"。
+  weak.page.selfEntry = () => ({ role: 'self', model: 'Qwen2.5-7B-Instruct-Q4_N_0', capabilities: ['text'],
+    modelRequests: 0, memAvail: 500, memTotal: 1000, memUsage: 10 });
+  weak.channel.peerInfos = () => [];
+  const weakErr = weak.page.send('看图说话');
+  assert(weakErr.includes('没有支持'), 'no vision node anywhere fails closed: ' + weakErr);
+  console.log('PASS: hub image send routes by self capability, fail-closed without vision nodes');
+}
+
+// 算力端↔算力端 roster 同步后的空 deviceInfo 轮询帧必须带 capabilities 字段：
+// validDeviceInfo 在 v2 中要求必填，缺字段会让 encodeMessage 抛错，
+// 触发 LinkEnhanceChannel drop('消息格式或长度超出限制')——真机上两台算力端握手成功后立即互踢。
+(async () => {
+  const hub = setup(true);
+  hub.page.pageReady = true;
+  hub.page.serviceReady = true;
+  hub.channel.selfComputeNumber = () => 1;
+  hub.channel.hasEpoch = epoch => epoch === 2;
+  hub.channel.peerInfos = () => [
+    { epoch: 1, peerId: 'chat', name: '聊天设备1', helloName: '聊天设备1', ready: true, role: 'chat', slot: 1 },
+    { epoch: 2, peerId: 'worker', name: '算力设备2', helloName: '算力设备2', ready: true, role: 'compute', slot: 2 }
+  ];
+  hub.page.pollDeviceInfo();
+  await flush();
+  const poll = hub.sent.filter(message => message.type === 'deviceInfo' && String(message.requestId).indexOf('info-') === 0);
+  assert.equal(poll.length, 1, 'exactly one info poll goes to the compute worker, none to the chat link');
+  assert(Array.isArray(poll[0].capabilities), 'the info poll frame must declare capabilities');
+  console.log('PASS: compute info poll frame carries capabilities (validDeviceInfo-safe)');
+})().catch(error => { console.error(error); process.exitCode = 1; });

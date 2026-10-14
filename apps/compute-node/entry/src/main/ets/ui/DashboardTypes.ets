@@ -26,6 +26,8 @@ export interface DeviceView {
   batteryTemp?: number;
   cpuUsage?: number;
   modelRequests?: number;
+  /** Model capabilities of this device, e.g. ['text', 'vision']; absent means text-only. */
+  capabilities?: string[];
 }
 
 export interface JobView {

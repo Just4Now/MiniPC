@@ -1,9 +1,8 @@
 import { hidebug } from '@kit.PerformanceAnalysisKit';
 import { batteryInfo, thermal } from '@kit.BasicServicesKit';
-import { fileIo } from '@kit.CoreFileKit';
 import { DeviceInfoEntry, WireMessage } from '../protocol/ChatProtocol';
+import { deviceCapabilities, readyModelDirs } from '../llm/ModelRegistry';
 
-export const MODEL_DIR: string = 'Qwen2.5-7B-Instruct-Q4_N_0';
 // Lightweight status requests run often; multi-frame rosters are gated
 // separately by topology changes and a 30-second refresh interval.
 export const DEVICE_INFO_POLL_MS: number = 2000;
@@ -23,30 +22,20 @@ class LoadCache {
 
 const loadCache: LoadCache = new LoadCache();
 
-/** filesDir/models 下首个通过就绪检查的目录；没有则空串。 */
+/** filesDir/models 下首个就绪目录（展示用）；没有则空串。发现逻辑见 llm/ModelRegistry。 */
 export function deployedModelName(filesDir: string): string {
-  if (filesDir.length === 0) return '';
-  const err = readinessOf(filesDir + '/models/' + MODEL_DIR);
-  return err === '' ? MODEL_DIR : '';
+  const dirs = readyModelDirs(filesDir);
+  return dirs.length > 0 ? dirs[0] : '';
 }
 
-export function readinessOf(modelDir: string): string {
-  for (const name of ['api_config.json', 'params', 'tokenizer.json']) {
-    try {
-      const file = fileIo.openSync(modelDir + '/' + name, fileIo.OpenMode.READ_ONLY);
-      try {
-        if (fileIo.readSync(file.fd, new ArrayBuffer(1)) !== 1) return '模型文件为空：' + name;
-      } finally {
-        fileIo.closeSync(file);
-      }
-    } catch (_) { return '模型文件缺失或无法读取：' + name; }
-  }
-  return '';
+/** 设备级能力 = 所有就绪模型能力的并集；无模型 → []。 */
+export function deployedCapabilities(filesDir: string): string[] {
+  return deviceCapabilities(filesDir);
 }
 
 /** 对齐 modelshare：hidebug 采内存，失败则未采样。 */
 export function sampleMemory(): DeviceInfoEntry {
-  const entry: DeviceInfoEntry = { memTotal: 0, memAvail: 0, memUsage: -1 };
+  const entry: DeviceInfoEntry = { memTotal: 0, memAvail: 0, memUsage: -1, capabilities: [] };
   try {
     const mem = hidebug.getSystemMemInfo();
     const totalKB = Number(mem.totalMem);
@@ -129,6 +118,7 @@ export function buildSelfEntry(filesDir: string, running: number, deviceName: st
     cpuUsage: mem.cpuUsage,
     model: model,
     modelRequests: running,
+    capabilities: deployedCapabilities(filesDir),
     ready: true
   };
 }
@@ -146,6 +136,7 @@ export function toDeviceInfoReply(requestId: string, entry: DeviceInfoEntry): Wi
     cpuUsage: entry.cpuUsage === undefined ? -1 : entry.cpuUsage,
     model: entry.model || '',
     modelRequests: entry.modelRequests === undefined ? -1 : entry.modelRequests,
+    capabilities: entry.capabilities || [],
     peerRole: 'compute'
   };
 }
@@ -160,6 +151,7 @@ export function applyDeviceInfo(target: DeviceInfoEntry, message: WireMessage): 
   if (typeof message.cpuUsage === 'number') target.cpuUsage = message.cpuUsage;
   if (typeof message.model === 'string') target.model = message.model;
   if (typeof message.modelRequests === 'number') target.modelRequests = message.modelRequests;
+  if (Array.isArray(message.capabilities)) target.capabilities = message.capabilities;
 }
 
 export function formatComputeStatus(entry: DeviceInfoEntry | undefined): string {

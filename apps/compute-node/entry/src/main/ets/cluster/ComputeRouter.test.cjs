@@ -29,6 +29,26 @@ assert.equal(pickRoute([self, peer], 'split', true).isSelf, true, 'split can tak
 assert.equal(pickRoute([self, peer], 'split', false).name, '对端', 'split can take the peer');
 assert.equal(pickRoute([peer], 'pin1', true), null, 'pin1 fails closed without the hub model');
 assert.equal(pickRoute([self], 'pin2', false), null, 'pin2 fails closed without a peer');
+// 能力过滤：needs 是硬门槛，排在空闲/负载/内存/本机之前
+const textIdle = node({ name: '空闲文本', model: 'Qwen', requests: 0, memAvail: 9000 });
+const visionBusy = node({ name: '忙碌多模态', model: 'VL', requests: 3, memAvail: 100, capabilities: ['text', 'vision'] });
+assert.equal(pickNode([textIdle, visionBusy], ['vision']).name, '忙碌多模态',
+  'capability gates before the idle preference');
+assert.equal(pickNode([textIdle], ['vision']), null, 'no capable node fails closed');
+assert.equal(pickNode([node({ name: '默认', model: 'Qwen', requests: 0 })], ['vision']), null,
+  'a node without declared capabilities is text-only');
+assert.equal(pickNode([textIdle, visionBusy], ['text']).name, '空闲文本',
+  'declared needs still follow the load order');
+assert.equal(pickNode([textIdle, visionBusy]).name, '空闲文本', 'no needs keeps the old behaviour');
+const visionPeer = node({ name: '多模态对端', model: 'VL', requests: 1, memAvail: 8000, capabilities: ['text', 'vision'] });
+assert.equal(pickRoute([self, visionPeer], 'pin1', true, ['vision']), null,
+  'pin1 fails closed when the hub lacks the capability');
+assert.equal(pickRoute([self, visionPeer], 'pin2', true, ['vision']).name, '多模态对端',
+  'pin2 picks the capable peer');
+assert.equal(pickRoute([self, visionPeer], 'split', true, ['vision']).name, '多模态对端',
+  'split falls back to the capable side');
+assert.equal(pickRoute([self, peer], 'split', true, ['text']).isSelf, true,
+  'split without needs keeps the hub');
 const router = new ComputeRouter();
 assert.equal(router.selfLoad(1), 1);
 router.beginSelf();

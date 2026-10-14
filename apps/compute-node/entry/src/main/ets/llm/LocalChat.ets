@@ -1,10 +1,14 @@
 import probe from 'libgewu_probe.so';
-import { fileIo } from '@kit.CoreFileKit';
+import { modelRequestType, readyModelDirs, selectModelDir } from './ModelRegistry';
 
 export interface ChatMessage { role: string; content: string; }
 export interface ChatUpdate { kind: 'delta' | 'done'; text: string; error?: string; finishReason?: string; }
-interface ChatRequest { type: string; messages: ChatMessage[]; stream: boolean; max_tokens: number; }
-export interface ChatStartOptions { maxTokens?: number; waitSeconds?: number; }
+/** 多模态消息分片：图片（image_url 为 data URL）或文本。 */
+interface MessagePart { type: string; text?: string; image_url?: string }
+/** 推理请求的消息：纯文本 content 为字符串；带图时最后一条 user 消息为分片数组。 */
+interface RequestMessage { role: string; content: string | MessagePart[] }
+interface ChatRequest { type: string; messages: RequestMessage[]; stream: boolean; max_tokens: number; }
+export interface ChatStartOptions { maxTokens?: number; waitSeconds?: number; image?: string; }
 const MAX_TOKENS = 2048;
 interface NativeEvent { event: string; id?: string; payload: string; }
 interface NativeResponse { message?: ChatMessage; finish_reason?: string | null; }
@@ -30,36 +34,55 @@ export class LocalChat {
   activeCount(): number { return this.jobs.length; }
 
   // Basic readiness only: leave GEWU initialization to the actual request.
+  // 任意一个就绪模型即视为可用；具体目录在请求时按需求选择。
   readinessError(): string {
     if (this.closed) return '模型服务已关闭。';
-    for (const name of ['api_config.json', 'params', 'tokenizer.json']) {
-      try {
-        const file = fileIo.openSync(this.filesDir + '/models/Qwen2.5-7B-Instruct-Q4_N_0/' + name,
-          fileIo.OpenMode.READ_ONLY);
-        try {
-          if (fileIo.readSync(file.fd, new ArrayBuffer(1)) !== 1) return '模型文件为空：' + name;
-        } finally {
-          fileIo.closeSync(file);
-        }
-      } catch (_) { return '模型文件缺失或无法读取：' + name; }
+    return readyModelDirs(this.filesDir).length > 0 ? '' : '模型文件缺失或无法读取。';
+  }
+
+  /**
+   * 带图请求把最后一条 user 消息编码为多模态分片（图片在前、文本在后，对齐
+   * Qwen-VL 惯例）；请求类型跟随所选模型 api_config 的声明。
+   *
+   * stream 固定为 false：流式回调会把跨块的字符切成 U+FFFD，一次完整响应才能
+   * 让这些字节留在同一个块里被正确解码。
+   */
+  private buildRequest(messages: ChatMessage[], image: string, type: string, maxTokens: number): ChatRequest {
+    const out: RequestMessage[] = [];
+    for (let index = 0; index < messages.length; index++) {
+      const message = messages[index];
+      if (image.length > 0 && index === messages.length - 1 && message.role === 'user') {
+        const parts: MessagePart[] = [
+          { type: 'image_url', image_url: 'data:image/jpeg;base64,' + image },
+          { type: 'text', text: message.content }
+        ];
+        out.push({ role: message.role, content: parts });
+      } else {
+        out.push({ role: message.role, content: message.content });
+      }
     }
-    return '';
+    return { type: type, messages: out, stream: false, max_tokens: maxTokens };
   }
 
   start(messages: ChatMessage[], callback: (update: ChatUpdate) => void, requestId: string = '',
     options: ChatStartOptions = {}): string {
     if (this.closed) return '模型服务已关闭。';
     if (messages.length === 0) return '请输入问题。';
+    const image: string = options.image === undefined ? '' : options.image;
     const maxTokens = Number.isInteger(options.maxTokens) && (options.maxTokens as number) > 0 ?
       Math.min(MAX_TOKENS, options.maxTokens as number) : MAX_TOKENS;
     const waitSeconds = Number.isInteger(options.waitSeconds) && (options.waitSeconds as number) > 0 ?
       options.waitSeconds as number : 0;
-    // Streaming callbacks replace a character split across chunks with U+FFFD.
-    // One complete response keeps those bytes together and decodes the character.
-    const request: ChatRequest = { type: 'qwen2', messages: messages, stream: false, max_tokens: maxTokens };
+    // 图片即 vision 需求：选不出覆盖该需求的模型目录时 fail closed，绝不送给纯文本模型。
+    const needs: string[] = image.length > 0 ? ['vision'] : [];
+    const modelDir = selectModelDir(this.filesDir, needs);
+    if (modelDir.length === 0) {
+      return image.length > 0 ? '本地模型不支持图片理解。' : '模型文件缺失或无法读取。';
+    }
+    const request = this.buildRequest(messages, image, modelRequestType(this.filesDir, modelDir), maxTokens);
     let nativeId = 0;
     try {
-      nativeId = probe.start(this.filesDir + '/models/Qwen2.5-7B-Instruct-Q4_N_0', JSON.stringify(request),
+      nativeId = probe.start(this.filesDir + '/models/' + modelDir, JSON.stringify(request),
         this.filesDir + '/gewu-chat.jsonl', waitSeconds);
     } catch (_) { return '无法启动模型，请确认模型文件已部署。'; }
     if (nativeId <= 0) return '模型繁忙，请稍后再发。';

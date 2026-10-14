@@ -52,7 +52,10 @@ class NativeInferenceService {
       stage: 'start',
       requestId: spec.forwardId,
       nativeId: nativeId,
-      bytes: utf8ByteLength(spec.prompt)
+      bytes: utf8ByteLength(spec.prompt),
+      // 参考 host 的 probe 是脚本化测试替身，不做视觉推理；这里只记录图片体积，
+      // 绝不记录图片内容。真实视觉执行在 ArkTS 侧 InferenceHost + VL 引擎。
+      imageBytes: utf8ByteLength(spec.image || '')
     });
     this.dispatcher.subscribe(nativeId, (event) => this.onEvent(job, event));
     this.dispatcher.poll();

@@ -8,6 +8,9 @@ const kits = {
   thermal: 2,
   battery: 421
 };
+// 模型发现由 llm/ModelRegistry 提供并有专项测试；这里用可变状态验证委托语义。
+let registryDirs = [];
+let unionCaps = [];
 const context = {
   exports: {}, Error, Map, Math, Number, Date,
   require(name) {
@@ -25,15 +28,18 @@ const context = {
         thermal: { getLevel() { return kits.thermal; } }
       };
     }
-    if (name === '@kit.CoreFileKit') {
-      return { fileIo: { OpenMode: { READ_ONLY: 0 }, openSync() { throw new Error('missing'); } } };
+    if (name === '../llm/ModelRegistry') {
+      return {
+        readyModelDirs: () => registryDirs.slice(),
+        deviceCapabilities: () => unionCaps.slice()
+      };
     }
-    if (name === '../protocol/ChatProtocol') return {};
     return {};
   }
 };
 vm.runInNewContext(transpile(__dirname + '/DeviceInfo.ets'), context);
-const { DEVICE_INFO_POLL_MS, sampleMemory, formatHeat, thermalLabel, toDeviceInfoReply, formatComputeStatus } = context.exports;
+const { DEVICE_INFO_POLL_MS, sampleMemory, formatHeat, thermalLabel, toDeviceInfoReply, formatComputeStatus,
+  buildSelfEntry, deployedCapabilities, deployedModelName } = context.exports;
 assert.equal(DEVICE_INFO_POLL_MS, 2000);
 assert.equal(thermalLabel(0), '清凉');
 assert.equal(thermalLabel(2), '温热');
@@ -49,10 +55,25 @@ assert.equal(sampled.batteryTemp, 42.1);
 assert.equal(sampled.cpuUsage, 18);
 const reply = toDeviceInfoReply('info-1', {
   name: '算力', memTotal: 2000, memAvail: 800, memUsage: 60,
-  thermalLevel: 2, batteryTemp: 42.1, cpuUsage: 18, model: 'Qwen', modelRequests: 1
+  thermalLevel: 2, batteryTemp: 42.1, cpuUsage: 18, model: 'Qwen', modelRequests: 1,
+  capabilities: ['text', 'vision']
 });
 assert.equal(reply.thermalLevel, 2);
 assert.equal(reply.batteryTemp, 42.1);
 assert.equal(reply.cpuUsage, 18);
+assert.equal(reply.capabilities.join(','), 'text,vision', 'deviceInfo reply carries capabilities');
 assert.equal(formatComputeStatus(reply), 'Qwen · 内存 60% · 42.1℃ · 温热 · CPU 18% · 推理 1');
-console.log('PASS: thermal/battery/CPU sampling, heat label, deviceInfo reply fields');
+// 委托 ModelRegistry：模型名取首个就绪目录，设备能力取并集
+assert.equal(deployedModelName('/app'), '', 'no ready dir means no model');
+assert.equal(deployedCapabilities('/app').join(','), '', 'no model ready means no capabilities');
+assert.equal(buildSelfEntry('/app', 0, '本机', 'self').capabilities.join(','), '');
+registryDirs = ['Qwen2.5-7B-Instruct-Q4_N_0'];
+unionCaps = ['text'];
+assert.equal(buildSelfEntry('/app', 0, '本机', 'self').model, 'Qwen2.5-7B-Instruct-Q4_N_0');
+assert.equal(deployedCapabilities('/app').join(','), 'text');
+registryDirs = ['Qwen2.5-7B-Instruct-Q4_N_0', 'Qwen2.5-VL-7B-Q4_N_0'];
+unionCaps = ['text', 'vision'];
+assert.equal(deployedModelName('/app'), 'Qwen2.5-7B-Instruct-Q4_N_0', 'display model is the first ready dir');
+assert.equal(buildSelfEntry('/app', 0, '本机', 'self').capabilities.join(','), 'text,vision',
+  'device capability is the union across deployed models');
+console.log('PASS: thermal/battery/CPU sampling, heat label, deviceInfo reply fields, registry delegation');

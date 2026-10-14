@@ -5,10 +5,12 @@ export class ChatBridge {
   private onPrepare: () => void;
   private onPick: () => void;
   private onClear: () => void;
+  private onClearImage: () => void;
   constructor(send: (text: string) => string, stop: () => void, connect: () => void, prepare: () => void,
-    pick: () => void, clear: () => void = (): void => {}) {
+    pick: () => void, clear: () => void = (): void => {}, clearImage: () => void = (): void => {}) {
     this.onSend = send; this.onStop = stop; this.onConnect = connect; this.onPrepare = prepare; this.onPick = pick;
     this.onClear = clear;
+    this.onClearImage = clearImage;
   }
   send(text: string): string { return this.onSend(text); }
   stop(): void { this.onStop(); }
@@ -16,4 +18,5 @@ export class ChatBridge {
   prepare(): void { this.onPrepare(); }
   pickImage(): void { this.onPick(); }
   clear(): void { this.onClear(); }
+  clearImage(): void { this.onClearImage(); }
 }

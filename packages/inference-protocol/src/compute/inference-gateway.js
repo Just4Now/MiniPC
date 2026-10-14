@@ -180,6 +180,7 @@ class InferenceGateway {
       job.nativeId = this.executor.submit({
         forwardId: job.localId,
         prompt: job.message.prompt,
+        image: job.message.image,
         maxOutputTokens: job.message.maxOutputTokens,
         maxCtx: this.profile.maxCtx,
         deadlineBudgetMs: budget
@@ -288,7 +289,7 @@ class InferenceGateway {
     this.forwards.set(forwardId, { key: key, requestId: message.requestId, originEpoch: ingress.epoch, workerEpoch: peer.epoch, clientId: clientId });
     this.jobs.set(key, { key: key, message: message, ingress: ingress, clientId: clientId, state: 'forwarded', forwardId: forwardId, cleaned: false });
     this.reply(ingress.epoch, wireMessage('infer.accepted', { requestId: message.requestId, state: 'preparing', source: peer.name || peer.modelId }));
-    this.sendTo(peer.epoch, wireMessage('infer.request', {
+    const forwarded = wireMessage('infer.request', {
       clientInstanceId: message.clientInstanceId,
       agentRunId: message.agentRunId,
       requestId: forwardId,
@@ -300,7 +301,10 @@ class InferenceGateway {
       deadlineBudgetMs: message.deadlineBudgetMs,
       sched: true,
       origin: 'loop'
-    }));
+    });
+    // 附图必须随转发一起走，否则 worker 只拿到纯文本请求。
+    if (message.image !== undefined) forwarded.image = message.image;
+    this.sendTo(peer.epoch, forwarded);
   }
 
   onWorker(message, ingress) {

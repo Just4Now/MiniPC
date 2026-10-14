@@ -289,8 +289,41 @@ export class LinkEnhanceChannel {
 
   initialize(context: common.UIAbilityContext): void { this.context = context; }
   operation(): number { return this.lifecycle; }
-  resume(): void { this.foreground = true; }
-  suspend(): void { this.foreground = false; this.disconnect(); }
+  /**
+   * 回前台：恢复近场。
+   *
+   * suspend() 调的 disconnect() 会 server.stop()+close()、把 server=null、
+   * serverWanted=false，并且**不安排重启**（只有 serverStopped 那条路径带
+   * preserveServerIntent=true 才自愈）。原先这里只置 foreground 标志，
+   * 于是应用「退过一次后台再回前台」后本机服务端永久缺失 ——
+   * 对端连接恒得 32390201「Peer server is not started」（真机实测），
+   * 聊天端同时也不再扫描，表现为双方彻底连不上。
+   *
+   * prepare() → authorize() 里 `if (IS_SERVER) startServer()`；startServer() 自带
+   * `server !== null` 短路，所以重复调用是安全的。
+   */
+  resume(): void {
+    this.foreground = true;
+    this.prepare().catch((error: Error): void => {
+      hilog.error(0, 'NearbyChat', 'near-field restore failed: %{public}s', error.message);
+    });
+  }
+  /**
+   * 退后台：断开近场，但**保留已冻结的排位**。
+   *
+   * 必须用 `disconnect(true)`（`preserveServerIntent`）而不是缺省 `disconnect()`：
+   * 后者会 `frozenComputeKeys = []`、`selfComputeSlot = 0`、`serverWanted = false`
+   * 且不安排重启 —— 于是回前台重建出来的服务端以 **slot 0** 广播，而选举规则是
+   * 「没有声明 hub 就都排在最后」，两台便会双双落成「算力设备2」✗（真机实测）。
+   * `disconnect(true)` 会保存并恢复排位与 leadership，正是 `serverStopped` 路径在用的语义。
+   *
+   * 随后取消后台重启：BLE 操作在后台可能受限，统一交给 `resume()` 触发。
+   */
+  suspend(): void {
+    this.foreground = false;
+    this.disconnect(true);
+    this.cancelServerRestart();
+  }
   isForeground(): boolean { return this.foreground; }
   private checkOperation(operation: number): void {
     if (!this.foreground || operation !== this.lifecycle || this.context === null) {
@@ -1362,6 +1395,17 @@ export class LinkEnhanceChannel {
       // Once elected, the hub allocates membership even when discovery is
       // suspended for chat/inference or meshSettled was cleared by a peer drop.
       if (!establishedHub && (!this.meshSettled || !this.electionReady)) return;
+      // No local re-election while an established compute handshake exists. The
+      // two boxes sample memAvail at different moments and a VL hub reads lower
+      // than an idle text box, so both could crown themselves slot 1 and the
+      // hub-side prune tears the healthy link down (E69D0195 after ~10s, i.e.
+      // the election timer). The dialled peer's role/slot is authoritative: a
+      // worker that dialled a hub must join it, not re-elect against it. The
+      // accepting hub keeps its own election (it may legitimately be the hub).
+      if (!establishedHub && this.peers.some((peer: Peer) =>
+        peer.role === 'compute' && !peer.fromServer &&
+        (peer.ready || peer.opened) && (peer.computeSlot === 1 || peer.ready || peer.hello)))
+        return this.applyJoinedPeerView();
       const members: RankMember[] = [];
       const self = new RankMember();
       self.key = this.computeKey(this.localUid(), this.localName());
@@ -1397,6 +1441,46 @@ export class LinkEnhanceChannel {
     } finally {
       this.rankingSlots = false;
     }
+  }
+
+  /**
+   * A compute peer that already exchanged hello with us knows the star topology
+   * better than our local memory snapshot. Freeze its declared hub first and
+   * ourselves after it, so the two boxes never elect each other as two hubs
+   * from independently sampled memAvail. Only the dialling side (client of the
+   * link) adopts the peer-first view: the accepting server must never demote
+   * itself, it stays the hub candidate until a remote roster/claim says
+   * otherwise. Without a declared hub we stay last; the hub's next roster sync
+   * assigns the authoritative rank.
+   */
+  private applyJoinedPeerView(): void {
+    const selfKey = this.computeKey(this.localUid(), this.localName());
+    const dialled = this.peers.filter((peer: Peer) =>
+      peer.role === 'compute' && !peer.fromServer && (peer.ready || peer.opened));
+    if (dialled.length === 0) {
+      // Accepting side: keep the current view so an established hub does not
+      // re-elect itself against a just-joined worker.
+      this.applyComputeSlots();
+      this.pruneWorkerLinks();
+      return;
+    }
+    const hubPeer = dialled.find((peer: Peer) => peer.computeSlot === 1) || dialled[0];
+    const hubKey = this.computeKey(hubPeer.deviceUid || hubPeer.peerId, hubPeer.helloName);
+    if (hubKey.length === 0 || hubKey === selfKey) {
+      this.applyComputeSlots();
+      this.pruneWorkerLinks();
+      return;
+    }
+    const keys: string[] = [hubKey];
+    for (const peer of dialled) {
+      const key = this.computeKey(peer.deviceUid || peer.peerId, peer.helloName);
+      if (key.length === 0 || key === hubKey || key === selfKey || keys.indexOf(key) >= 0) continue;
+      keys.push(key);
+    }
+    if (keys.indexOf(selfKey) < 0) keys.push(selfKey);
+    this.frozenComputeKeys = keys;
+    this.applyComputeSlots();
+    this.pruneWorkerLinks();
   }
 
   private computeKey(peerId: string, name: string): string {
