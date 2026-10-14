@@ -217,7 +217,21 @@ export class LinkEnhanceChannel {
 
   initialize(context: common.UIAbilityContext): void { this.context = context; }
   operation(): number { return this.lifecycle; }
-  resume(): void { this.foreground = true; }
+  /**
+   * 回前台：恢复近场（与算力端同源缺陷）。
+   *
+   * suspend() 的 disconnect() 会取消扫描、递增 meshRun 并清掉选举/广播定时器，
+   * 而原先这里只置 foreground 标志 → 聊天端回前台后不再主动扫描/发现，
+   * 叠加算力端服务端未重建（对端恒得 32390201「Peer server is not started」），
+   * 表现为「增强连接失败：未找到可用的蓝牙地址」。
+   * 这里重新走一遍 prepare()，让权限/设备管理器与后续由界面驱动的发现流程恢复。
+   */
+  resume(): void {
+    this.foreground = true;
+    this.prepare().catch((error: Error): void => {
+      hilog.error(0, 'NearbyChat', 'near-field restore failed: %{public}s', error.message);
+    });
+  }
   suspend(): void { this.foreground = false; this.disconnect(); }
   isForeground(): boolean { return this.foreground; }
   private checkOperation(operation: number): void {

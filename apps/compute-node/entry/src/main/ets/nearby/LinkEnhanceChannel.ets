@@ -289,8 +289,41 @@ export class LinkEnhanceChannel {
 
   initialize(context: common.UIAbilityContext): void { this.context = context; }
   operation(): number { return this.lifecycle; }
-  resume(): void { this.foreground = true; }
-  suspend(): void { this.foreground = false; this.disconnect(); }
+  /**
+   * 回前台：恢复近场。
+   *
+   * suspend() 调的 disconnect() 会 server.stop()+close()、把 server=null、
+   * serverWanted=false，并且**不安排重启**（只有 serverStopped 那条路径带
+   * preserveServerIntent=true 才自愈）。原先这里只置 foreground 标志，
+   * 于是应用「退过一次后台再回前台」后本机服务端永久缺失 ——
+   * 对端连接恒得 32390201「Peer server is not started」（真机实测），
+   * 聊天端同时也不再扫描，表现为双方彻底连不上。
+   *
+   * prepare() → authorize() 里 `if (IS_SERVER) startServer()`；startServer() 自带
+   * `server !== null` 短路，所以重复调用是安全的。
+   */
+  resume(): void {
+    this.foreground = true;
+    this.prepare().catch((error: Error): void => {
+      hilog.error(0, 'NearbyChat', 'near-field restore failed: %{public}s', error.message);
+    });
+  }
+  /**
+   * 退后台：断开近场，但**保留已冻结的排位**。
+   *
+   * 必须用 `disconnect(true)`（`preserveServerIntent`）而不是缺省 `disconnect()`：
+   * 后者会 `frozenComputeKeys = []`、`selfComputeSlot = 0`、`serverWanted = false`
+   * 且不安排重启 —— 于是回前台重建出来的服务端以 **slot 0** 广播，而选举规则是
+   * 「没有声明 hub 就都排在最后」，两台便会双双落成「算力设备2」✗（真机实测）。
+   * `disconnect(true)` 会保存并恢复排位与 leadership，正是 `serverStopped` 路径在用的语义。
+   *
+   * 随后取消后台重启：BLE 操作在后台可能受限，统一交给 `resume()` 触发。
+   */
+  suspend(): void {
+    this.foreground = false;
+    this.disconnect(true);
+    this.cancelServerRestart();
+  }
   isForeground(): boolean { return this.foreground; }
   private checkOperation(operation: number): void {
     if (!this.foreground || operation !== this.lifecycle || this.context === null) {
