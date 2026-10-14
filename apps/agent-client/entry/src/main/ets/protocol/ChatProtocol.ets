@@ -1,5 +1,13 @@
 import { util } from '@kit.ArkTS';
 
+/**
+ * 图片随请求传输的裸 base64 上限（无 data: 前缀）。
+ * 约束链：分片层 MAX_FRAME 64 KiB；裸 base64 24000 + prompt 上限 32768 + 字段开销 ≈ 57 KB < 64 KiB，
+ * 因此带图时无需裁剪 prompt。必须与 packages/inference-protocol 的 LIMITS.maxImageBase64
+ * 以及算力端 ChatProtocol.MAX_IMAGE_BASE64 三处一致。
+ */
+export const MAX_IMAGE_BASE64: number = 24000;
+
 export interface ChatMessage { role: string; content: string; }
 export interface DeviceInfoEntry {
   id?: string;
@@ -26,6 +34,8 @@ export interface WireMessage {
   type: string;
   requestId?: string;
   messages?: ChatMessage[];
+  /** infer.request 的可选附图：裸 base64（无 data: 前缀），受 MAX_IMAGE_BASE64 约束。 */
+  image?: string;
   text?: string;
   finishReason?: string;
   error?: string;
@@ -203,6 +213,12 @@ function validInference(m: WireMessage): boolean {
   if (m.device !== undefined && (typeof m.device !== 'string' || m.device.length > 128)) return false;
   if (m.label !== undefined && (typeof m.label !== 'string' || m.label.length > 64)) return false;
   if (m.cluster !== undefined && !validCluster(m.cluster)) return false;
+  // 可选附图：与 nearby-chat request 同一条约束（裸 base64、无 data: 前缀、受上限约束）。
+  // 出站消息也要过这道校验（encodeMessage 会调 validMessage），保证发出去的一定是规范 base64。
+  if (m.image !== undefined) {
+    if (typeof m.image !== 'string' || m.image.length === 0 || m.image.length > MAX_IMAGE_BASE64 ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(m.image)) return false;
+  }
   return m.messages === undefined || validInferenceMessages(m.messages);
 }
 

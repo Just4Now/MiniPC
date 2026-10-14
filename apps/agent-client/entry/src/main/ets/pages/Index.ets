@@ -38,6 +38,7 @@ import { nearbyChannel } from '../nearby/LinkEnhanceChannel';
 import { inferenceClient, INFERENCE_STOPPED } from '../model/InferenceClient';
 import { RemoteComputeModel } from '../model/RemoteComputeModel';
 import { pickAttachment, readTextExcerpt, SavedAttachment } from '../media/ChatAttach';
+import { encodeLocalImageBase64 } from '../media/ImageEncode';
 import {
   CollaborationController,
   CollaborationStatus
@@ -47,6 +48,18 @@ const MAX_STEPS = 10;
 const LIVE_PLACEHOLDER = '正在生成…';
 const LIVE_TOOL_PREFIX = '正在调用工具：';
 const LIVE_COMPOSING = '正在整理工具结果…';
+
+/**
+ * 算力端请求阶段 → 直播气泡文案（见 InferHooks.onPhase）。
+ * 覆盖"加载权重 / prefill"那段静默：真机实测文本路径首字要等约 30s，
+ * 期间只显示「正在生成…」的话，用户分不清是在加载还是卡住了。
+ */
+function remotePhaseText(state: string): string {
+  if (state === 'queued') { return '排队中…'; }
+  if (state === 'loading') { return '正在加载模型…'; }
+  if (state === 'prefill') { return '正在理解问题…'; }
+  return LIVE_PLACEHOLDER;
+}
 // Remote prompts carry recent turns only; the full transcript stays in the UI/store.
 const REMOTE_HISTORY_TURNS = 6;
 const REMOTE_HISTORY_MAX_CHARS = 4000;
@@ -440,7 +453,9 @@ struct Index {
               } else {
                 Column() {
                   if (bubble.imagePath.length > 0) {
-                    Image(bubble.imagePath)
+                    // ArkUI 的 Image 必须以 file:// 识别沙箱文件；直接传 /data/storage/... 会被
+                    // 当作网络地址处理，加载失败且不抛异常，只表现为空白。
+                    Image('file://' + bubble.imagePath)
                       .width(168)
                       .height(126)
                       .borderRadius(12)
@@ -484,19 +499,26 @@ struct Index {
         if (this.pendingPath.length > 0) {
           Row() {
             if (this.pendingKind === 'image' && this.pendingLocal.length > 0) {
-              Image(this.pendingLocal)
+              // 同上：沙箱路径必须带 file:// 前缀，否则预览是空白。
+              Image('file://' + this.pendingLocal)
                 .width(36)
                 .height(36)
                 .borderRadius(8)
                 .objectFit(ImageFit.Cover)
             }
-            Text(this.pendingName)
-              .fontSize(13)
-              .fontColor('#16332C')
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .layoutWeight(1)
-              .margin({ left: 8 })
+            if (this.pendingKind !== 'image') {
+              Text(this.pendingName)
+                .fontSize(13)
+                .fontColor('#16332C')
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .layoutWeight(1)
+                .margin({ left: 8 })
+            } else {
+              // 图片不显示文件名：用户只需要看到缩略图，文件名对其没有意义。
+              // Blank 占住剩余空间，把 × 保持在右侧，行布局与文档附件一致。
+              Blank()
+            }
             Button('×')
               .width(28)
               .height(28)
@@ -1115,7 +1137,8 @@ struct Index {
     return this.pageActive && generation === this.remoteRunGeneration && !this.stopRequested;
   }
 
-  private async runRemoteAgent(task: string, display: string, imagePath: string): Promise<void> {
+  private async runRemoteAgent(task: string, display: string, imagePath: string,
+    imagePayload: string = ''): Promise<void> {
     if (!this.pageActive || this.sending) { return; }
     const generation = ++this.remoteRunGeneration;
     this.stopRequested = false;
@@ -1171,8 +1194,17 @@ struct Index {
         },
         onDelta: (text: string): void => {
           if (this.isCurrentRemoteRun(generation)) { this.showLiveReply(text); }
+        },
+        onPhase: (state: string): void => {
+          if (this.isCurrentRemoteRun(generation)) { this.setLivePhase(remotePhaseText(state)); }
         }
       });
+      // 附图随本轮**第一次**模型调用发出，RemoteComputeModel 用完即清。
+      // 只在确有图片时调用：本轮 model 是新建的，本就无需清空，也让不涉及图片的
+      // 调用方（含测试替身）不必实现这个 setter。
+      if (imagePayload.length > 0) {
+        model.setImage(imagePayload);
+      }
       const runner = new ReActAgentRunner(
         model, tools, MAX_STEPS, skillSnapshot, true, false, true,
         (): number => inferenceClient.promptBudgetBytes(), false, true);
@@ -1216,7 +1248,13 @@ struct Index {
       // several are idle; every other request keeps the single-device path below.
       const parallel = this.createParallelRunner(generation, tools, skillSnapshot);
       this.activeParallel = parallel;
-      const handled = await parallel.tryRun(task, conversation, this.parallelObserver(generation), listener);
+      // 带图请求不走并行拆分：并行分支会为每个子任务新建 RemoteComputeModel（见
+      // createParallelRunner），附图只注入到上面这一个主模型。带图一律走下面的单模型
+      // 路径，保证图纸只被理解一次、且第一跳就带上。
+      let handled = false;
+      if (imagePayload.length === 0) {
+        handled = await parallel.tryRun(task, conversation, this.parallelObserver(generation), listener);
+      }
       if (!handled && this.isCurrentRemoteRun(generation)) {
         this.parallelHeader = '';
         this.parallelViews = [];
@@ -1555,8 +1593,11 @@ struct Index {
 
   private composeAttachmentTask(text: string): string {
     if (this.pendingKind === 'image') {
-      const lead = text.length > 0 ? `（附图）${text}` : '（附图）';
-      return `${lead}\n图片文件：${this.pendingPath}。当前模型看不到图片像素，不要编造画面，直接说明无法查看图片。`;
+      // 图片以裸 base64 随 infer.request 的 image 字段发出（见 ImageEncode / InferenceClient）。
+      // 文字只保留「（附图）」前缀 + 用户原话：算力端 VL 通道会剥掉该前缀
+      // （VlLlmTransport.buildPrompt）。绝不能再把本地路径当正文发出去 ——
+      // 那是聊天机沙盒内的相对路径，算力端读不到，只会让模型答"看不到图片"。
+      return text.length > 0 ? `（附图）${text}` : '（附图）请描述这张图片。';
     }
     const lead = text.length > 0 ? text : '请阅读附件。';
     const excerpt = readTextExcerpt(this.pendingPath);
@@ -1578,9 +1619,23 @@ struct Index {
     const task = hasFile ? this.composeAttachmentTask(text) : text;
     const shown = text.length > 0 ? text : (this.pendingKind === 'image' ? '（附图）' : this.pendingName);
     const imagePath = this.pendingKind === 'image' ? this.pendingLocal : '';
+    // 先把图片压成协议可承载的裸 base64 再发送；编码失败就不发请求，保留草稿与附件。
+    let imagePayload = '';
+    if (imagePath.length > 0) {
+      try {
+        imagePayload = await encodeLocalImageBase64(imagePath);
+      } catch (error) {
+        this.appendLine('Error', error instanceof Error ? error.message : '图片编码失败', BubbleKind.ERROR);
+        return;
+      }
+      if (imagePayload.length === 0) {
+        this.appendLine('Error', '图片编码失败，未发送请求', BubbleKind.ERROR);
+        return;
+      }
+    }
     this.message = '';
     this.clearAttachment();
-    await this.runRemoteAgent(task, shown, imagePath);
+    await this.runRemoteAgent(task, shown, imagePath, imagePayload);
   }
   /** Most recent whole exchanges within a fixed budget, oldest dropped first. */
   private buildRemoteConversation(): ConversationContext {
