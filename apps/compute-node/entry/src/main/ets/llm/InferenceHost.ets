@@ -5,7 +5,7 @@ import { LlmTransport } from './LlmTransport';
 import { QwenVlManager } from './QwenVlManager';
 import { RelayLocal } from './InferenceRelay';
 import { sha256Hex, splitUtf8, utf8Bytes } from './InferenceWire';
-import { repairUtf8FromSource } from './Utf8Repair';
+import { sanitizeModelOutput } from './Utf8Repair';
 
 // Must equal the native session max_ctx in gewu_probe.cpp.
 const MAX_CONTEXT = 32768;
@@ -39,11 +39,6 @@ function messageBytes(messages: ChatMessage[]): number {
     total += utf8Bytes(message.content).length;
   }
   return total;
-}
-
-function outputBudget(requested: number | undefined): number {
-  return typeof requested === 'number' && Number.isInteger(requested) && requested > 0 ?
-    Math.min(MAX_OUTPUT, requested) : MAX_OUTPUT;
 }
 
 /** Native wait derived from the requester's deadline; 0 keeps the native default. */
@@ -221,10 +216,13 @@ export class InferenceHost implements RelayLocal {
         this.onUpdate(requestId, update);
       }, requestId, image);
     } else {
+      // maxOutputTokens 原样透传：LocalChat 应用逐行等价的封顶（整数且 >0 取
+      // min(2048, x)，否则 2048）。这里先封顶会让执行端档位分类看到不同的预算，
+      // 与 hub 侧 InferenceRelay 的分类结果不一致。
       error = this.model.start(messages, (update: ChatUpdate) => {
         this.onUpdate(requestId, update);
       }, requestId, {
-        maxTokens: outputBudget(message.maxOutputTokens),
+        maxTokens: message.maxOutputTokens,
         waitSeconds: waitSeconds(message.deadlineBudgetMs)
       });
     }
@@ -243,7 +241,9 @@ export class InferenceHost implements RelayLocal {
         this.statusSent = true;
         this.send({ type: 'infer.status', version: 2, requestId: requestId, state: 'generating' }, this.activeEpoch);
       }
-      const pieces = splitUtf8(update.text, 1024);
+      // 出口清洗：文本路径的 delta 已在 LocalChat 清洗过（幂等，此处为恒等），
+      // VL 通道的 delta 是原样文本——这里统一兜住，wire 与任务卡都不再外泄 U+FFFD。
+      const pieces = splitUtf8(sanitizeModelOutput(update.text, this.promptText), 1024);
       for (const piece of pieces) {
         this.seq += 1;
         this.answer += piece;
@@ -256,7 +256,7 @@ export class InferenceHost implements RelayLocal {
           }
         });
       }
-      this.card.delta(requestId, this.activeEpoch, repairUtf8FromSource(this.answer, this.promptText));
+      this.card.delta(requestId, this.activeEpoch, sanitizeModelOutput(this.answer, this.promptText));
       return;
     }
     const epoch = this.activeEpoch;
@@ -271,7 +271,7 @@ export class InferenceHost implements RelayLocal {
     const bytes = utf8Bytes(this.answer);
     hilog.info(0, 'NearbyChat', 'infer done request=%{public}s bytes=%{public}d reason=%{public}s',
       requestId, bytes.length, reason);
-    this.card.end(requestId, epoch, repairUtf8FromSource(this.answer, this.promptText), false);
+    this.card.end(requestId, epoch, sanitizeModelOutput(this.answer, this.promptText), false);
     this.send({
       type: 'infer.done', version: 2, requestId: requestId, lastSeq: this.seq,
       outputUtf8Bytes: bytes.length, outputSha256: sha256Hex(bytes), finishReason: reason, source: 'mate70-local'
@@ -280,7 +280,7 @@ export class InferenceHost implements RelayLocal {
 
   private fail(requestId: string, epoch: number, code: string, text: string, retryable: boolean): void {
     hilog.warn(0, 'NearbyChat', 'infer error code=%{public}s request=%{public}s', code, requestId);
-    this.card.end(requestId, epoch, repairUtf8FromSource(this.answer, this.promptText), true);
+    this.card.end(requestId, epoch, sanitizeModelOutput(this.answer, this.promptText), true);
     this.send({
       type: 'infer.error', version: 2, requestId: requestId, code: code, message: text, retryable: retryable
     }, epoch);

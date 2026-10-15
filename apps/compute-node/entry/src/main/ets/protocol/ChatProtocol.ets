@@ -30,6 +30,12 @@ export interface DeviceInfoEntry {
    * 缺省 = 老对端（v1）未声明，按纯文本处理。
    */
   capabilities?: string[];
+  /**
+   * 部署模型声明的最高强度档位 1-2（1 弱、2 强）；缺省 = 老对端/未部署，消费侧
+   * 按 2（强档）处理。线上容忍旧构建上报的 3，消费侧归一为 2。
+   * 档位是质量偏好：绝不参与 fail closed 判定。
+   */
+  modelTier?: number;
   ready?: boolean;
   slot?: number;
 }
@@ -56,6 +62,8 @@ export interface WireMessage {
   model?: string;
   modelRequests?: number;
   capabilities?: string[];
+  /** 部署模型声明的最高强度档位 1-3；仅 deviceInfo 声明携带，消费侧缺省按 2。 */
+  modelTier?: number;
   /** Capabilities a request needs; routing fails closed when no device has them. */
   needs?: string[];
   /** 本次请求携带的 JPEG 图片，裸 base64（无 data: 前缀）；带图请求必须需要 vision。 */
@@ -154,6 +162,15 @@ function validCapabilities(value: string[] | undefined, max: number): boolean {
   return true;
 }
 
+/**
+ * 强度档位：undefined（老对端未声明）或整数 1-3（容忍旧构建上报的 3，消费侧归一为 2）。
+ * 档位是质量偏好，只影响选点偏好，绝不构成拒收理由——这里仅拦畸形值。
+ */
+function validModelTier(value: number | undefined): boolean {
+  return value === undefined ||
+    (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 3);
+}
+
 function validDeviceEntry(entry: DeviceInfoEntry): boolean {
   if (entry === null || typeof entry !== 'object') return false;
   return validOptionalString(entry.id, 128) && validOptionalString(entry.deviceUid, 64) &&
@@ -165,6 +182,7 @@ function validDeviceEntry(entry: DeviceInfoEntry): boolean {
     validOptionalString(entry.model, 128) &&
     validOptionalNumber(entry.modelRequests) &&
     validCapabilities(entry.capabilities, 8) &&
+    validModelTier(entry.modelTier) &&
     (entry.ready === undefined || typeof entry.ready === 'boolean') &&
     (entry.slot === undefined || (Number.isInteger(entry.slot) && entry.slot >= 1 && entry.slot <= 64));
 }
@@ -175,6 +193,7 @@ function validDeviceInfo(m: WireMessage): boolean {
     validOptionalNumber(m.memUsage) && validOptionalNumber(m.thermalLevel) &&
     validOptionalNumber(m.batteryTemp) && validOptionalNumber(m.cpuUsage) &&
     validOptionalNumber(m.modelRequests) && validCapabilities(m.capabilities, 8) &&
+    validModelTier(m.modelTier) &&
     (m.peerRole === undefined || m.peerRole === 'compute' || m.peerRole === 'chat');
 }
 

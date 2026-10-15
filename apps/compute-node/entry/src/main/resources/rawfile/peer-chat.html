@@ -244,7 +244,8 @@
         const bar=(kind,label,value)=>value<0?'<span class="bar '+kind+'"></span>':
           '<span class="bar '+kind+'">'+label+' <i><b style="width:'+Math.min(100,value)+'%"></b></i>'+value+'%</span>';
         const vision=(device.capabilities||[]).indexOf('vision')>=0;
-        const details=compute?'<div class="meta"><span class="model">'+esc(shortModel(device.model))+(vision?' · 多模态':'')+'</span>'+
+        const tier=typeof device.modelTier==='number'&&(device.modelTier===1||device.modelTier===2)?device.modelTier:0;
+        const details=compute?'<div class="meta"><span class="model">'+esc(shortModel(device.model))+(vision?' · 多模态':'')+(tier?' · T'+tier:'')+'</span>'+
           '<span class="heat">'+(heat?esc(heat):'')+'</span>'+
           bar('mem','内存',mem)+bar('cpu','CPU',cpu)+
           '<span class="jobs">推理 '+infer+'</span></div>':'';

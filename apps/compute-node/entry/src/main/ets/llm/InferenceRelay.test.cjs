@@ -13,10 +13,12 @@ function load(relative, requires = {}) {
 }
 const pool = load('../cluster/DevicePool.ets');
 const routerModule = load('../cluster/ComputeRouter.ets');
+const taskRules = load('../cluster/TaskRules.ets');
 const { InferenceRelay, RelayEvents } = load('./InferenceRelay.ets', {
   '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {} } },
   '../cluster/ComputeRouter': routerModule,
-  '../cluster/DevicePool': pool
+  '../cluster/DevicePool': pool,
+  '../cluster/TaskRules': taskRules
 });
 const json = (value) => JSON.parse(JSON.stringify(value));
 
@@ -38,6 +40,13 @@ function harness(initial, options = {}) {
 }
 const request = (id) => ({ type: 'infer.request', version: 2, requestId: id, messages: [{ role: 'developer', content: 'sys' }, { role: 'user', content: 'q' }],
   maxOutputTokens: 512, deadlineBudgetMs: 170000, promptFormat: 'loop-react-split-v1' });
+// 代码围栏 → 复杂档 2；生成类标记 → 常规 2；短净文本 → 简单档 1（预算不参与定档）
+const heavyRequest = (id) => ({ type: 'infer.request', version: 2, requestId: id,
+  messages: [{ role: 'user', content: '```python\nprint(1)\n```' }], maxOutputTokens: 512, deadlineBudgetMs: 170000 });
+const midRequest = (id) => ({ type: 'infer.request', version: 2, requestId: id,
+  messages: [{ role: 'user', content: '帮我写一首诗' }], maxOutputTokens: 512, deadlineBudgetMs: 170000 });
+const lightRequest = (id) => ({ type: 'infer.request', version: 2, requestId: id,
+  messages: [{ role: 'user', content: 'hi' }], maxOutputTokens: 128, deadlineBudgetMs: 170000 });
 const self = (extra) => node({ epoch: 0, label: '算力设备1', isSelf: true, ready: true, inflight: 0, memAvail: 100, ...extra });
 const worker = (extra) => node({ epoch: 7, label: '算力设备2', ready: true, inflight: 0, memAvail: 100, ...extra });
 const tests = [];
@@ -51,6 +60,51 @@ test('DevicePool: idle only, more memory first, hub wins ties, load counts ready
   assert.equal(pool.pickIdle([worker(), self()]).isSelf, true);
   const load = pool.clusterLoad([self({ inflight: 2 }), worker(), worker({ epoch: 8, ready: false })]);
   assert.deepEqual(json(load), { idle: 1, total: 2 });
+});
+test('DevicePool: pickIdleFor routes by tier closeness, busy strong nodes downgrade', () => {
+  // 贴近：简单任务在 [hub t2, worker t1] 里选 worker
+  assert.equal(pool.pickIdleFor([self({ modelTier: 2 }), worker({ modelTier: 1 })], ['text'], 1).epoch, 7);
+  // 贴近决胜：[t1 闲, t2 忙, t2 闲] taskTier 2 → 空闲的 t2（忙的先出局）
+  const tier2 = pool.pickIdleFor([worker({ modelTier: 1 }),
+    worker({ epoch: 8, modelTier: 2, inflight: 1 }), worker({ epoch: 9, modelTier: 2 })], ['text'], 2);
+  assert.equal(tier2.epoch, 9);
+  // 降档：强节点忙，空闲弱档接客；全忙才 null（档位不改变 BUSY 语义）
+  assert.equal(pool.pickIdleFor([self({ modelTier: 2, inflight: 1 }), worker({ modelTier: 1 })], ['text'], 2).epoch, 7);
+  assert.equal(pool.pickIdleFor([self({ modelTier: 2, inflight: 1 }), worker({ modelTier: 1, inflight: 1 })], ['text'], 2), null);
+  // 零回归：全默认档位 + 任意 taskTier 与不传第三参同赢家（内存平手 → 本机）
+  assert.equal(pool.pickIdleFor([self(), worker()], ['text'], 2).isSelf, true);
+  assert.equal(pool.pickIdleFor([self(), worker()], ['text']).isSelf, true);
+  assert.equal(pool.pickIdleFor([self(), worker({ memAvail: 200 })], ['text'], 1).epoch, 7,
+    'tier tie still falls back to memory');
+});
+test('a light infer request goes to the closer-tier node instead of the idle hub', () => {
+  const h = harness([self({ modelTier: 2 }), worker({ epoch: 8, modelTier: 1 })]);
+  h.relay.handleFromChat(lightRequest('r1'), 5);
+  assert.equal(h.to(8, 'infer.request').length, 1, 'tier-1 task prefers the tier-1 worker');
+  assert.equal(h.localHandled.length, 0);
+});
+test('a tier-2 infer request prefers the closer strong node', () => {
+  const h = harness([worker({ modelTier: 1 }), worker({ epoch: 8, modelTier: 2 })]);
+  h.relay.handleFromChat(midRequest('r1'), 5);
+  assert.equal(h.to(8, 'infer.request').length, 1, 't2 is closer to a tier-2 task than t1');
+});
+test('a heavy infer request downgrades when every strong node is busy', () => {
+  const h = harness([self({ inflight: 1, modelTier: 2 }), worker({ sampled: 1, modelTier: 2 }),
+    worker({ epoch: 8, label: '算力设备3', modelTier: 1 })]);
+  h.relay.handleFromChat(heavyRequest('r1'), 5);
+  assert.equal(h.to(8, 'infer.request').length, 1, 'the idle tier-1 worker takes the downgraded complex task');
+  assert.equal(h.to(7, 'infer.request').length, 0);
+});
+test('all capable nodes busy still yields retryable BUSY regardless of tier', () => {
+  const h = harness([self({ inflight: 1, modelTier: 2 }), worker({ sampled: 1, modelTier: 1 })]);
+  h.relay.handleFromChat(heavyRequest('r1'), 5);
+  const refusal = h.to(5, 'infer.error')[0];
+  assert.deepEqual([refusal.code, refusal.retryable], ['BUSY', true]);
+});
+test('a default-tier pool keeps the hub for a heavy request (zero regression)', () => {
+  const h = harness([self(), worker()]);
+  h.relay.handleFromChat(heavyRequest('r1'), 5);
+  assert.deepEqual(h.localHandled, [['infer.request', 'r1', 5]]);
 });
 test('idle hub runs the request itself', () => {
   const h = harness([self(), worker({ memAvail: 50 })]);

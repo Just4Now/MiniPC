@@ -10,7 +10,8 @@ import { PoolNode } from '../cluster/DevicePool';
 import { nearbyChannel } from '../nearby/LinkEnhanceChannel';
 import { WireMessage, ChatMessage, ClusterInfo, DeviceInfoEntry } from '../protocol/ChatProtocol';
 import { IS_SERVER } from '../nearby/NearbyConfig';
-import { ComputeRouter, DispatchEntry, ScheduleNode, originKeyOf, pickRoute } from '../cluster/ComputeRouter';
+import { ComputeRouter, DispatchEntry, ScheduleNode, originKeyOf, pickNode, pickRoute } from '../cluster/ComputeRouter';
+import { classifyFromMessages } from '../cluster/TaskRules';
 import { LocalLlmTransport } from '../llm/LlmTransport';
 import { VlLlmTransport } from '../llm/VlLlmTransport';
 import { QwenVlManager } from '../llm/QwenVlManager';
@@ -314,7 +315,7 @@ struct Index {
   }
 
   private createJob(id: string, messages: ChatMessage[], peer: boolean, epoch: number, workerEpoch: number = 0,
-    image: string = '', originLabel: string = '', routeMode: string = ''): ActiveJob {
+    image: string = '', originLabel: string = '', routeMode: string = '', taskTier: number = 0): ActiveJob {
     const peers = this.channel.peerInfos();
     return {
       id: id, key: Index.jobKey(epoch, id), epoch: epoch, peer: peer, answer: '', question: messages[messages.length - 1].content,
@@ -326,7 +327,8 @@ struct Index {
       // 轨道展示，聊天端来源的任务不回传（仪表盘流式刷新会反复序列化 20KB+ 数据）。
       image: peer && epoch !== 0 ? '' :
         (image.length > 0 ? 'data:image/jpeg;base64,' + image : ''),
-      routeMode: routeMode
+      routeMode: routeMode,
+      taskTier: taskTier
     };
   }
 
@@ -380,7 +382,7 @@ struct Index {
       jobs: this.jobs.filter((item: ActiveJob) => item.workerEpoch === 0).length,
       role: 'self', model: self.model, memUsage: self.memUsage,
       thermalLevel: self.thermalLevel, batteryTemp: self.batteryTemp, cpuUsage: self.cpuUsage,
-      modelRequests: self.modelRequests, capabilities: self.capabilities
+      modelRequests: self.modelRequests, capabilities: self.capabilities, modelTier: self.modelTier
     });
     seen.push('id:' + selfUid);
     // Deduplicate on connection identity, not on the public label: two distinct
@@ -404,7 +406,7 @@ struct Index {
         epoch: peer.epoch, name: hidePhoneName(peer.name, peer.role || 'chat'), id: id, ready: peer.ready, jobs: count,
         role: peer.role, model: stats?.model, memUsage: stats?.memUsage,
         thermalLevel: stats?.thermalLevel, batteryTemp: stats?.batteryTemp, cpuUsage: stats?.cpuUsage,
-        modelRequests: stats?.modelRequests, capabilities: stats?.capabilities
+        modelRequests: stats?.modelRequests, capabilities: stats?.capabilities, modelTier: stats?.modelTier
       });
     }
     for (const extra of this.remoteEntries()) {
@@ -432,7 +434,7 @@ struct Index {
         epoch: -1, name: name, id: id || name, ready: extra.ready !== false, jobs: 0,
         role: role, model: extra.model, memUsage: extra.memUsage,
         thermalLevel: extra.thermalLevel, batteryTemp: extra.batteryTemp, cpuUsage: extra.cpuUsage,
-        modelRequests: extra.modelRequests, capabilities: extra.capabilities
+        modelRequests: extra.modelRequests, capabilities: extra.capabilities, modelTier: extra.modelTier
       });
     }
     const views: JobView[] = [];
@@ -567,6 +569,28 @@ struct Index {
     return true;
   }
 
+  /** 本机档位：selfEntry 的 modelTier（1-2：1 弱、2 强），未声明/越界 → 2 强档。 */
+  private selfTierOf(): number {
+    const tier = this.selfEntry().modelTier;
+    return tier === 1 ? 1 : 2;
+  }
+
+  /**
+   * G5：本地能力不足（原规则），或（仅 auto 模式）任务档位高于本机且调度器真会
+   * 选别的节点。用 pickNode 真实结果判定，避免"进了调度器又选回本机"造成的
+   * 聊天轨道/任务卡错位。pin/split 模式档位盲（实验纯净性）。
+   * 仅 hub 有调度权：worker 档位不足时本机直答——档位是质量偏好，绝不变成本机
+   * 被拒绝的理由（否则 scheduleRequest 会回"请连接算力设备1"）。
+   */
+  private shouldScheduleSelf(needs: string[], taskTier: number): boolean {
+    if (needs.length > 0 && !this.selfMeetsNeeds(needs)) return true;
+    if (this.channel.selfComputeNumber() !== 1) return false;
+    if (this.routeMode !== 'auto' && this.routeMode.length > 0) return false;
+    if (taskTier <= this.selfTierOf()) return false;
+    const pick = pickNode(this.scheduleNodes(), needs, taskTier);
+    return pick !== null && !pick.isSelf;
+  }
+
   private recentMessages(question: string): ChatMessage[] {
     const recent = this.history.slice();
     while (recent.length > 0 && (recent.length > 6 ||
@@ -614,9 +638,11 @@ struct Index {
       // 管线内使用裸 base64：wire 校验与 LocalChat 都不认 data: 前缀。
       const image = jpegBase64Payload(this.pendingImage);
       const needs: string[] = image.length > 0 ? ['vision'] : [];
-      // G5：Hub 自身请求仅在本地能力不足时交给调度（如带图而本地是纯文本模型）；
-      // 纯文本仍本机直答，聊天轨道的取消/历史行为保持不变。
-      if (needs.length > 0 && !this.selfMeetsNeeds(needs)) {
+      // G5：Hub 自身请求仅在本地能力不足，或（仅 auto 模式）任务档位高于本机且
+      // 调度器真会选别的节点时交给调度；轻任务与无更强节点时仍本机直答，聊天
+      // 轨道的取消/历史行为保持不变。
+      const profile = classifyFromMessages(messages, image.length > 0);
+      if (this.shouldScheduleSelf(needs, profile.tier)) {
         if (this.railBusy()) return '模型正在回答上一条问题，请稍后再发。';
         const error = this.scheduleRequest(id, messages, 0, false, this.selfComputeLabel(), needs, image);
         if (error) return error;
@@ -624,7 +650,7 @@ struct Index {
         this.pendingImage = '';
         return '';
       }
-      const error = this.startLocal(id, messages, false, 0, image);
+      const error = this.startLocal(id, messages, false, 0, image, '', '', profile.tier);
       if (error) return error;
       this.pendingImage = '';
     } else {
@@ -717,8 +743,9 @@ struct Index {
     return '';
   }
 
-  private chooseNode(nodes: ScheduleNode[], originEpoch: number, needs: string[] = []): ScheduleNode | null {
-    if (this.routeMode !== 'split') return pickRoute(nodes, this.routeMode, true, needs);
+  private chooseNode(nodes: ScheduleNode[], originEpoch: number, needs: string[] = [],
+    taskTier: number = 0): ScheduleNode | null {
+    if (this.routeMode !== 'split') return pickRoute(nodes, this.routeMode, true, needs, taskTier);
     const prior = this.splitTarget.get(originEpoch);
     let preferSelf = true;
     if (prior === 2) preferSelf = false;
@@ -737,8 +764,9 @@ struct Index {
   private logRoute(job: ActiveJob): void {
     if (job.routeMode.length === 0 || job.routeMode === 'auto') return;
     hilog.info(0, 'NearbyChat',
-      'EXP-ROUTE mode=%{public}s origin=%{public}s worker=%{public}s hop=%{public}d id=%{public}s',
-      job.routeMode, job.origin, job.source, job.workerEpoch === 0 ? 0 : 1, job.id);
+      'EXP-ROUTE mode=%{public}s origin=%{public}s worker=%{public}s hop=%{public}d tier=%{public}d id=%{public}s',
+      job.routeMode, job.origin, job.source, job.workerEpoch === 0 ? 0 : 1,
+      job.taskTier === undefined ? 0 : job.taskTier, job.id);
   }
 
   private logExperiment(job: ActiveJob): void {
@@ -757,9 +785,10 @@ struct Index {
       thermal = stats === undefined || stats.thermalLevel === undefined ? -1 : stats.thermalLevel;
     }
     hilog.info(0, 'NearbyChat',
-      'EXP mode=%{public}s origin=%{public}s worker=%{public}s ttft=%{public}d total=%{public}d chars=%{public}d hop=%{public}d err=%{public}s start=%{public}d mem=%{public}d thermal=%{public}d id=%{public}s',
+      'EXP mode=%{public}s origin=%{public}s worker=%{public}s ttft=%{public}d total=%{public}d chars=%{public}d hop=%{public}d err=%{public}s start=%{public}d mem=%{public}d thermal=%{public}d tier=%{public}d id=%{public}s',
       job.routeMode, job.origin, job.source, ttft, total, job.answer.length,
-      job.workerEpoch === 0 ? 0 : 1, job.error ? '1' : '0', job.startedAt, mem, thermal, job.id);
+      job.workerEpoch === 0 ? 0 : 1, job.error ? '1' : '0', job.startedAt, mem, thermal,
+      job.taskTier === undefined ? 0 : job.taskTier, job.id);
   }
 
   /** Card text is the Loop user task; the model still receives the full prompt. */
@@ -848,6 +877,7 @@ struct Index {
     // 能力必须透传给转发决策：infer 侧按它做硬门槛（见 pickIdleFor）。
     own.capabilities = self.capabilities !== undefined && self.capabilities.length > 0 ?
       self.capabilities : ['text'];
+    if (self.modelTier !== undefined) own.modelTier = self.modelTier;
     nodes.push(own);
     const peers = this.channel.peerInfos();
     for (const peer of peers) {
@@ -861,6 +891,7 @@ struct Index {
       node.memAvail = stats?.memAvail === undefined ? -1 : stats.memAvail;
       node.capabilities = stats !== undefined && stats.capabilities !== undefined &&
         stats.capabilities.length > 0 ? stats.capabilities : ['text'];
+      if (stats?.modelTier !== undefined) node.modelTier = stats.modelTier;
       nodes.push(node);
     }
     return nodes;
@@ -881,7 +912,7 @@ struct Index {
   }
 
   private startLocal(id: string, messages: ChatMessage[], peer: boolean, epoch: number, image: string = '',
-    originLabel: string = '', routeMode: string = ''): string {
+    originLabel: string = '', routeMode: string = '', taskTier: number = 0): string {
     if (this.transport === null && this.model === null) return '模型服务尚未初始化。';
     if (!peer && this.localBusy()) return '模型正在回答上一条问题，请稍后再发。';
     // The rail only streams while one card owns the composer; a second peer request
@@ -895,7 +926,7 @@ struct Index {
       if (this.webActiveId === id) this.webActiveId = '';
       return error;
     }
-    const job = this.createJob(id, messages, peer, epoch, 0, image, originLabel, routeMode);
+    const job = this.createJob(id, messages, peer, epoch, 0, image, originLabel, routeMode, taskTier);
     this.jobs.push(job);
     this.logRoute(job);
     hilog.info(0, 'NearbyChat', 'accepted request=%{public}s remote=%{public}s jobs=%{public}d',
@@ -933,6 +964,7 @@ struct Index {
       node.capabilities = self.capabilities || [];
       node.requests = self.modelRequests === undefined ? 0 : self.modelRequests;
       node.memAvail = self.memAvail === undefined ? -1 : self.memAvail;
+      if (self.modelTier !== undefined) node.modelTier = self.modelTier;
       nodes.push(node);
     }
     const peers = this.channel.peerInfos();
@@ -948,6 +980,7 @@ struct Index {
       node.capabilities = stats?.capabilities || [];
       node.requests = this.router.workerLoad(peer.epoch, stats?.modelRequests === undefined ? 0 : stats.modelRequests);
       node.memAvail = stats?.memAvail === undefined ? -1 : stats.memAvail;
+      if (stats?.modelTier !== undefined) node.modelTier = stats.modelTier;
       nodes.push(node);
     }
     return nodes;
@@ -958,7 +991,15 @@ struct Index {
     if (sched) return this.startLocal(id, messages, true, originEpoch, image, forwardedOrigin || '聊天设备');
     if (this.channel.selfComputeNumber() !== 1) return '请连接算力设备1，由它统一调度。';
     const nodes = this.scheduleNodes();
-    const node = this.chooseNode(nodes, originEpoch, needs);
+    // 档位与执行端同规则重算：消息逐字转发，两侧分类结果一致（tier 不上线协议）。
+    const profile = classifyFromMessages(messages, image.length > 0);
+    const node = this.chooseNode(nodes, originEpoch, needs, profile.tier);
+    // nodeTier < tier 即降档；node=none 即能力不合格（fail closed）。
+    hilog.info(0, 'NearbyChat',
+      'ROUTE id=%{public}s tier=%{public}d reason=%{public}s needs=%{public}s mode=%{public}s node=%{public}s nodeTier=%{public}d',
+      id, profile.tier, profile.reason, needs.join(','), this.routeMode,
+      node === null ? 'none' : (node.isSelf ? '本机' : node.name),
+      node === null ? 0 : node.modelTier);
     if (node === null) {
       if (this.routeMode === 'pin1') return '实验路由找不到算力设备1。';
       if (this.routeMode === 'pin2') return '实验路由找不到算力设备2。';
@@ -966,7 +1007,7 @@ struct Index {
       if (needs.length > 0 && nodes.length > 0) return '集群中没有支持' + needsLabel(needs) + '的设备。';
       return '集群中无已部署模型的可用设备。';
     }
-    if (node.isSelf) return this.startLocal(id, messages, true, originEpoch, image, '', this.routeMode);
+    if (node.isSelf) return this.startLocal(id, messages, true, originEpoch, image, '', this.routeMode, profile.tier);
     const entry = new DispatchEntry();
     entry.originEpoch = originEpoch;
     entry.originRequestId = id;
@@ -976,7 +1017,7 @@ struct Index {
     // verbatim and that is the only way to tell two same-id requests apart.
     const dispatch = this.router.beginDispatch(id, entry);
     const job = this.createJob(id, messages, true, originEpoch, node.epoch, image,
-      originEpoch === 0 ? this.selfComputeLabel() : '', this.routeMode);
+      originEpoch === 0 ? this.selfComputeLabel() : '', this.routeMode, profile.tier);
     this.jobs.push(job);
     this.logRoute(job);
     this.emitDashboard();
@@ -1062,7 +1103,7 @@ struct Index {
   private handleDeviceInfo(message: WireMessage, epoch: number): void {
     if (message.memUsage !== undefined || message.model !== undefined ||
       message.thermalLevel !== undefined || message.batteryTemp !== undefined ||
-      message.cpuUsage !== undefined) {
+      message.cpuUsage !== undefined || message.modelTier !== undefined) {
       let entry = this.peerStats.get(epoch);
       if (entry === undefined) {
         entry = { role: this.channel.peerRole(epoch) || 'compute', capabilities: [] };
@@ -1180,7 +1221,8 @@ struct Index {
         memTotal: stats?.memTotal, thermalLevel: stats?.thermalLevel,
         batteryTemp: stats?.batteryTemp, cpuUsage: stats?.cpuUsage,
         modelRequests: stats?.modelRequests,
-        capabilities: stats?.capabilities || []
+        capabilities: stats?.capabilities || [],
+        modelTier: stats?.modelTier
       };
       if (peer.role === 'chat' && peer.slot > 0) entry.slot = peer.slot;
       if (peer.role === 'compute' && peer.slot > 0) entry.slot = peer.slot;

@@ -1,5 +1,20 @@
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import probe from 'libgewu_probe.so';
-import { modelRequestType, readyModelDirs, selectModelDir } from './ModelRegistry';
+import { manifestTier, modelRequestType, readyModelDirs, selectModelDir } from './ModelRegistry';
+import { classifyFromMessages, taskTextOf } from '../cluster/TaskRules';
+import { sanitizeModelOutput } from './Utf8Repair';
+
+/**
+ * 本地文本推理（GEWU probe）。档位感知选模：与 hub 侧同规则重算任务档位（消息
+ * 逐字转发，两侧结果一致），用它在就绪目录里按贴近选强/弱模型；
+ * 选出的目录档位低于任务档位时记 local tier fallback 日志（降档可观测）。
+ * VL 通道（VlLlmTransport/QwenVlManager）v1 不感知档位——带图路径由 vision 需求
+ * 独占，不在本类的选型范围内。
+ *
+ * GEWU 引擎内部的跨块字符替换无法避免（见 Utf8Repair.sanitizeModelOutput），
+ * 本类是它的执行点：响应内容在进入 answer/回调之前一律清洗——本机 UI、
+ * 任务卡与 wire 下游拿到的都是同一份净化文本，幂等保证下游二次清洗安全。
+ */
 
 export interface ChatMessage { role: string; content: string; }
 export interface ChatUpdate { kind: 'delta' | 'done'; text: string; error?: string; finishReason?: string; }
@@ -20,6 +35,8 @@ interface Job {
   answer: string;
   failure: string;
   finishReason: string;
+  /** 请求原文（taskTextOf 拼接）：sanitizeModelOutput 的修复锚点来源。 */
+  promptSource: string;
   callback: ((update: ChatUpdate) => void) | undefined;
 }
 
@@ -44,8 +61,9 @@ export class LocalChat {
    * 带图请求把最后一条 user 消息编码为多模态分片（图片在前、文本在后，对齐
    * Qwen-VL 惯例）；请求类型跟随所选模型 api_config 的声明。
    *
-   * stream 固定为 false：流式回调会把跨块的字符切成 U+FFFD，一次完整响应才能
-   * 让这些字节留在同一个块里被正确解码。
+   * stream 固定为 false：流式回调会把跨块的字符切成 U+FFFD。真机实测单次完整
+   * 响应也不能幸免（引擎内部边界仍会吃掉多字节字符），最终的兜底是出口清洗
+   * sanitizeModelOutput（consumeEvents 处执行），stream:false 只是少制造一份。
    */
   private buildRequest(messages: ChatMessage[], image: string, type: string, maxTokens: number): ChatRequest {
     const out: RequestMessage[] = [];
@@ -75,9 +93,16 @@ export class LocalChat {
       options.waitSeconds as number : 0;
     // 图片即 vision 需求：选不出覆盖该需求的模型目录时 fail closed，绝不送给纯文本模型。
     const needs: string[] = image.length > 0 ? ['vision'] : [];
-    const modelDir = selectModelDir(this.filesDir, needs);
+    // 档位感知选模：与 hub 侧同规则重算（消息逐字转发，两侧结果一致）。
+    const profile = classifyFromMessages(messages, image.length > 0);
+    const modelDir = selectModelDir(this.filesDir, needs, profile.tier);
     if (modelDir.length === 0) {
       return image.length > 0 ? '本地模型不支持图片理解。' : '模型文件缺失或无法读取。';
+    }
+    const dirTier = manifestTier(this.filesDir, modelDir);
+    if (dirTier < profile.tier) {
+      hilog.info(0, 'NearbyChat', 'local tier fallback task=%{public}d dir=%{public}d model=%{public}s',
+        profile.tier, dirTier, modelDir);
     }
     const request = this.buildRequest(messages, image, modelRequestType(this.filesDir, modelDir), maxTokens);
     let nativeId = 0;
@@ -88,7 +113,7 @@ export class LocalChat {
     if (nativeId <= 0) return '模型繁忙，请稍后再发。';
     this.jobs.push({
       requestId: requestId, nativeId: nativeId, cancelled: false, answer: '', failure: '',
-      finishReason: '', callback: callback
+      finishReason: '', promptSource: taskTextOf(messages), callback: callback
     });
     if (this.timer === -1) this.timer = setInterval(() => this.consumeEvents(), 80);
     return '';
@@ -140,8 +165,11 @@ export class LocalChat {
         catch (_) { this.parseFailure(job); continue; }
         if (!response) { this.parseFailure(job); continue; }
         if (typeof response.message?.content === 'string' && response.message.content.length > 0) {
-          job.answer += response.message.content;
-          if (job.callback) job.callback({ kind: 'delta', text: response.message.content });
+          // GEWU 引擎可能在回调前就把跨块多字节字符替换成 U+FFFD：先修复后剔除，
+          // answer、delta 回调与最终 done 用的都是这一份净化文本。
+          const content = sanitizeModelOutput(response.message.content, job.promptSource);
+          job.answer += content;
+          if (job.callback) job.callback({ kind: 'delta', text: content });
         }
         if (typeof response.finish_reason === 'string' && response.finish_reason.length > 0) {
           job.finishReason = response.finish_reason;

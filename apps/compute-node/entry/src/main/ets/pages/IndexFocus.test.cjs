@@ -67,6 +67,9 @@ function setup(isServer) {
     if (name === '../cluster/ComputeRouter') {
       return loadEts(__dirname + '/../cluster/ComputeRouter.ets');
     }
+    if (name === '../cluster/TaskRules') {
+      return loadEts(__dirname + '/../cluster/TaskRules.ets');
+    }
     if (name === '../cluster/DeviceLabels') {
       return loadEts(__dirname + '/../cluster/DeviceLabels.ets');
     }
@@ -84,6 +87,7 @@ function setup(isServer) {
         if (typeof message.cpuUsage === 'number') target.cpuUsage = message.cpuUsage;
         if (typeof message.model === 'string') target.model = message.model;
         if (typeof message.modelRequests === 'number') target.modelRequests = message.modelRequests;
+        if (typeof message.modelTier === 'number') target.modelTier = message.modelTier;
       },
       buildSelfEntry(_dir, running) {
         return { name: '本机', id: 'self', role: 'self', model: 'Qwen2.5-7B-Instruct-Q4_N_0',
@@ -581,6 +585,117 @@ function setup(isServer) {
   const weakErr = weak.page.send('看图说话');
   assert(weakErr.includes('没有支持'), 'no vision node anywhere fails closed: ' + weakErr);
   console.log('PASS: hub image send routes by self capability, fail-closed without vision nodes');
+}
+
+// G5 档位扩展：Hub 自身请求在（仅 auto）任务档位高于本机、且调度器真会选别的
+// 节点时交给调度；轻任务仍本机直答。分类器是真实 TaskRules（与 hub 生产路径同一份）。
+{
+  const hub = setup(true);
+  hub.page.pageReady = true;
+  hub.page.serviceReady = true;
+  let localStarts = 0;
+  hub.page.model = { start() { localStarts++; return ''; }, readinessError() { return ''; },
+    cancel() {}, activeCount() { return 0; } };
+  hub.page.selfEntry = () => ({ role: 'self', model: 'Qwen2.5-7B-Instruct-Q4_N_0',
+    capabilities: ['text'], modelTier: 1, modelRequests: 0, memAvail: 500, memTotal: 1000, memUsage: 10 });
+  hub.channel.peerInfos = () => [{ epoch: 7, peerId: 'w', ready: true, role: 'compute', name: '算力设备2' }];
+  hub.page.peerStats.set(7, { model: 'Qwen2.5-7B-Instruct-Q4_N_0', modelRequests: 0, memAvail: 8000, modelTier: 2 });
+  // 代码围栏 → 复杂档 2 > 本机档 1，调度器选强档对端 → 任务卡转发。
+  assert.equal(hub.page.send('```python\nprint(1)\n```'), '');
+  assert.equal(hub.sent.at(-1).type, 'request');
+  assert.equal(hub.sent.at(-1).sched, true);
+  assert.equal(hub.page.jobs[0].workerEpoch, 7, 'complex question goes to the strong peer');
+  assert.equal(hub.page.jobs[0].taskTier, 2);
+  const board = hub.events.filter(e => e.kind === 'dashboard').at(-1);
+  assert.equal(board.devices.find(d => d.role === 'compute').modelTier, 2, 'peer card carries its tier');
+  assert.equal(board.devices.find(d => d.role === 'self').modelTier, 1, 'self card carries its tier');
+  // "你好" → 简单档 1 ≤ 本机档 1 → 聊天轨道本机直答。
+  hub.sent.length = 0;
+  assert.equal(hub.page.send('你好'), '');
+  assert.equal(localStarts, 1, 'a light question answers on the local rail');
+  assert.equal(hub.sent.length, 0, 'nothing is forwarded for a light question');
+  assert.equal(hub.page.jobs.at(-1).workerEpoch, 0);
+  assert.equal(hub.page.jobs.at(-1).taskTier, 1);
+  console.log('PASS: G5 tier scheduling forwards heavy questions, keeps light ones local');
+}
+
+// 强对端忙 → 负载不平手，空闲本机胜出 → 仍聊天轨道直答（降档而非排队）。
+{
+  const hub = setup(true);
+  hub.page.pageReady = true;
+  hub.page.serviceReady = true;
+  let localStarts = 0;
+  hub.page.model = { start() { localStarts++; return ''; }, readinessError() { return ''; },
+    cancel() {}, activeCount() { return 0; } };
+  hub.page.selfEntry = () => ({ role: 'self', model: 'Qwen2.5-7B-Instruct-Q4_N_0',
+    capabilities: ['text'], modelTier: 1, modelRequests: 0, memAvail: 500, memTotal: 1000, memUsage: 10 });
+  hub.channel.peerInfos = () => [{ epoch: 7, peerId: 'w', ready: true, role: 'compute', name: '算力设备2' }];
+  hub.page.peerStats.set(7, { model: 'Qwen2.5-7B-Instruct-Q4_N_0', modelRequests: 2, memAvail: 8000, modelTier: 2 });
+  assert.equal(hub.page.send('```python\nprint(1)\n```'), '');
+  assert.equal(hub.sent.length, 0, 'a busy strong peer loses to the idle hub');
+  assert.equal(localStarts, 1, 'pickNode picking self keeps the question on the chat rail');
+  assert.equal(hub.page.jobs[0].workerEpoch, 0);
+  // modelTier 单独成帧也走统计更新（handleDeviceInfo 状态门包含 modelTier）。
+  hub.page.receive({ type: 'deviceInfo', requestId: 'info-7', modelTier: 2 }, 7);
+  assert.equal(hub.page.peerStats.get(7).modelTier, 2);
+  console.log('PASS: busy strong peer downgrades to the idle hub; modelTier-only frames update stats');
+}
+
+// 全默认档位（老对端/未声明）：本机按强档 2 兜底，复杂档 2 ≤ 2 → 不进调度器，
+// 聊天轨道直答（未声明档位时不改变原有行为）；弱档本机 + 同档对端贴近平手时
+// 内存决胜；单机时 pickNode 只剩本机 → 仍聊天轨道直答（单机零回归）。
+{
+  const hub = setup(true);
+  hub.page.pageReady = true;
+  hub.page.serviceReady = true;
+  let localStarts = 0;
+  hub.page.model = { start() { localStarts++; return ''; }, readinessError() { return ''; },
+    cancel() {}, activeCount() { return 0; } };
+  hub.page.selfEntry = () => ({ role: 'self', model: 'Qwen2.5-7B-Instruct-Q4_N_0',
+    capabilities: ['text'], modelTier: 1, modelRequests: 0, memAvail: 500, memTotal: 1000, memUsage: 10 });
+  hub.channel.peerInfos = () => [{ epoch: 7, peerId: 'w', ready: true, role: 'compute', name: '算力设备2' }];
+  hub.page.peerStats.set(7, { model: 'Qwen2.5-7B-Instruct-Q4_N_0', modelRequests: 0, memAvail: 8000, modelTier: 1 });
+  assert.equal(hub.page.send('```python\nprint(1)\n```'), '');
+  assert.equal(hub.page.jobs[0].workerEpoch, 7, 'a closeness tie between same-tier nodes falls back to memory');
+  // 撤掉弱档声明（= 未声明/老对端形态）：复杂档 2 ≤ 强档兜底 2 → 本机直答。
+  hub.page.selfEntry = () => ({ role: 'self', model: 'Qwen2.5-7B-Instruct-Q4_N_0',
+    capabilities: ['text'], modelRequests: 0, memAvail: 500, memTotal: 1000, memUsage: 10 });
+  hub.sent.length = 0;
+  assert.equal(hub.page.send('```python\nprint(2)\n```'), '');
+  assert.equal(hub.sent.length, 0, 'an undeclared hub defaults to the strong tier and answers locally');
+  assert.equal(localStarts, 1);
+  // 单机（独立实例，mock 本地推理不会结束，避免 busy 门）：仍聊天轨道直答。
+  const solo = setup(true);
+  solo.page.pageReady = true;
+  solo.page.serviceReady = true;
+  let soloStarts = 0;
+  solo.page.model = { start() { soloStarts++; return ''; }, readinessError() { return ''; },
+    cancel() {}, activeCount() { return 0; } };
+  solo.channel.peerInfos = () => [];
+  assert.equal(solo.page.send('```python\nprint(3)\n```'), '');
+  assert.equal(solo.sent.length, 0);
+  assert.equal(soloStarts, 1, 'a single device keeps every question local');
+  console.log('PASS: undeclared hub defaults strong and stays local; same-tier ties fall back to memory; single device stays local');
+}
+
+// worker（非 hub）没有调度权：重问题不因档位被拒，仍本机直答（tier fail open，
+// 否则 scheduleRequest 会回"请连接算力设备1"把质量偏好变成拒绝理由）。
+{
+  const worker = setup(true);
+  worker.page.pageReady = true;
+  worker.page.serviceReady = true;
+  let localStarts = 0;
+  worker.page.model = { start() { localStarts++; return ''; }, readinessError() { return ''; },
+    cancel() {}, activeCount() { return 0; } };
+  worker.page.selfEntry = () => ({ role: 'self', model: 'Qwen2.5-7B-Instruct-Q4_N_0',
+    capabilities: ['text'], modelTier: 1, modelRequests: 0, memAvail: 500, memTotal: 1000, memUsage: 10 });
+  worker.channel.selfComputeNumber = () => 2;
+  worker.channel.peerInfos = () => [{ epoch: 7, peerId: 'hub', ready: true, role: 'compute', name: '算力设备1' }];
+  worker.page.peerStats.set(7, { model: 'Qwen2.5-7B-Instruct-Q4_N_0', modelRequests: 0, memAvail: 8000, modelTier: 2 });
+  assert.equal(worker.page.send('```python\nprint(1)\n```'), '');
+  assert.equal(worker.sent.length, 0, 'a worker without scheduling rights answers locally instead of erroring');
+  assert.equal(localStarts, 1);
+  console.log('PASS: a non-hub worker answers heavy questions locally instead of refusing on tier');
 }
 
 // 算力端↔算力端 roster 同步后的空 deviceInfo 轮询帧必须带 capabilities 字段：

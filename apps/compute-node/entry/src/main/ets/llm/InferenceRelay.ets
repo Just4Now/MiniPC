@@ -2,6 +2,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ChatMessage, ClusterInfo, WireMessage } from '../protocol/ChatProtocol';
 import { ComputeRouter, DispatchEntry } from '../cluster/ComputeRouter';
 import { PoolNode, clusterLoad, meetsCapabilities, pickIdle, pickIdleFor } from '../cluster/DevicePool';
+import { classifyFromMessages } from '../cluster/TaskRules';
 
 /** Time the hub keeps for relaying; the worker gets the requester's budget minus this. */
 const RELAY_MARGIN_MS = 5000;
@@ -156,11 +157,18 @@ export class InferenceRelay {
     // 带图 ⇒ 执行节点必须具备 vision；否则按纯文本。
     const needs: string[] = message.image !== undefined && message.image.length > 0 ?
       ['vision'] : ['text'];
+    const messages: ChatMessage[] = message.messages !== undefined ? message.messages :
+      [{ role: 'user', content: message.prompt || '' }];
+    // 档位与执行端同规则重算：消息经 forwardCopy 逐字转发，两侧输入一致、结果
+    // 一致——hub 用它选设备，执行端用它选本机模型目录（预算不参与定档，见 TaskRules）。
+    const profile = classifyFromMessages(messages, needs.indexOf('vision') >= 0);
     const pool = this.nodes();
-    const target = pickIdleFor(pool, needs);
+    const target = pickIdleFor(pool, needs, profile.tier);
     if (target === null) {
       // 区分「没有具备该能力的节点」（重试无意义）与「有但都忙」（可重试）。
       const capable = pool.some((item: PoolNode): boolean => item.ready && meetsCapabilities(item, needs));
+      hilog.info(0, 'NearbyChat', 'infer route miss request=%{public}s tier=%{public}d capable=%{public}s',
+        id, profile.tier, String(capable));
       if (capable) {
         this.refuse(id, chatEpoch, 'BUSY', '算力繁忙，请稍后重试', true);
       } else {
@@ -169,6 +177,8 @@ export class InferenceRelay {
       return;
     }
     if (target.isSelf) {
+      hilog.info(0, 'NearbyChat', 'infer local request=%{public}s tier=%{public}d nodeTier=%{public}d',
+        id, profile.tier, target.modelTier);
       this.local.handle(message, chatEpoch);
       this.publishLoad();
       return;
@@ -182,11 +192,10 @@ export class InferenceRelay {
     // Counted before the send below, so the next request in this tick sees the device as busy.
     const dispatch = this.router.beginDispatch(id, entry);
     const forwarded = this.forwardCopy(message, dispatch.forwardId);
-    const messages: ChatMessage[] = message.messages !== undefined ? message.messages :
-      [{ role: 'user', content: message.prompt || '' }];
     this.events.begin(id, chatEpoch, target.epoch, messages, message.label !== undefined ? message.label : '');
-    hilog.info(0, 'NearbyChat', 'infer relay request=%{public}s forward=%{public}s worker=%{public}d',
-      id, dispatch.forwardId, target.epoch);
+    hilog.info(0, 'NearbyChat',
+      'infer relay request=%{public}s forward=%{public}s worker=%{public}d tier=%{public}d nodeTier=%{public}d',
+      id, dispatch.forwardId, target.epoch, profile.tier, target.modelTier);
     this.sender(forwarded, target.epoch).then((sent: boolean): void => {
       if (!sent) this.forwardFailed(dispatch);
     }).catch((_error: Error): void => this.forwardFailed(dispatch));

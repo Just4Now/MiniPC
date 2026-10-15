@@ -103,6 +103,16 @@ assert(!validMessage({ ...info, capabilities: Array(9).fill('text') }));
 // The compute↔compute info poll frame carries only this shape; it must stay valid
 // or encodeMessage throws in LinkEnhanceChannel.write and tears the link down.
 assert(validMessage({ protocol: 'nearby-chat-v1', type: 'deviceInfo', requestId: 'info-2', capabilities: [] }));
+// 强度档位：可选整数 1-3；缺省（老对端）合法，畸形值拒收
+assert(validMessage({ ...info, modelTier: 3 }), 'wire tolerates a legacy tier 3 (consumers normalize to 2)');
+assert(validMessage({ ...info, modelTier: 1 }));
+assert(validMessage(info), 'an undeclared tier stays valid (old peer)');
+for (const modelTier of [0, 4, 2.5, 'strong']) {
+  assert(!validMessage({ ...info, modelTier }), 'malformed modelTier rejected: ' + JSON.stringify(modelTier));
+}
+// 分片往返后档位字段保留
+const tiered = new MessageAssembler();
+assert.equal(tiered.receive(encodeMessage({ ...info, modelTier: 3 }, 'tier')[0]).modelTier, 3);
 assert.equal(new MessageAssembler().receive(encodeMessage({
   type: 'deviceInfo', requestId: 'info-1', name: '算力', model: 'Qwen', memUsage: 40,
   thermalLevel: 2, batteryTemp: 42, cpuUsage: 18, capabilities: ['text'], peerRole: 'compute'
@@ -116,6 +126,10 @@ assert(validMessage({ ...sync, devices: [{ id: 'temporary-link', deviceUid: 'sta
 assert(!validMessage({ ...sync, devices: [{ id: 'temporary-link', deviceUid: 'x'.repeat(65), role: 'compute', capabilities: [] }] }));
 // 未声明能力的老对端（v1）必须仍然合法：缺省 = 纯文本，路由侧 fail closed。
 assert(validMessage({ ...sync, devices: [{ id: 'worker', role: 'compute' }] }), 'undeclared capabilities mean text-only');
+// roster 条目同样可携带可选档位（紧凑 roster 设计性省略，缺省合法）
+assert(validMessage({ ...sync, devices: [{ id: 'worker', role: 'compute', capabilities: [], modelTier: 2 }] }),
+  'roster entries may carry modelTier');
+assert(!validMessage({ ...sync, devices: [{ id: 'worker', role: 'compute', capabilities: [], modelTier: 9 }] }));
 assert(!validMessage({ ...sync, devices: null }));
 assert(validMessage({
   protocol: 'nearby-chat-v1', type: 'request', requestId: 'r',
