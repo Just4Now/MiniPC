@@ -1,3 +1,38 @@
+# MiniPC baseline rules
+# HarmonyOS / hvigor build
+.hvigor/
+**/build/
+**/.cxx/
+**/oh_modules/
+**/*.hap
+**/*.app
+local.properties
+**/local.properties
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Signing material — keep on this PC only
+tools/signing/
+**/*.p12
+**/*.p7b
+**/*.key
+**/*.pem
+
+# leftover local copies of the Sep 10 source packs
+0391-模型端源码/
+2938-聊天端源码/
+tools/jdk/
+tools/jdk17.zip
+tools/hap-unpack/
+src/*-signed.hap
+*.signed.hap
+
+# Device screenshots, hilog dumps, and one-off probes
+_model_xfer/
+
+# Agent implementation rules
 # Build outputs
 **/build/
 **/.preview/
@@ -20,3 +55,21 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+# Integration validation artifacts
+.validation/
+
+# Local HAR dependencies
+*.har
+
+# Local working notes: the migration plan folder, never tracked
+plan/
+
+# VL 多模态私有预编译库：仅本机放置，绝不入库
+# 期望清单见 apps/compute-node/entry/src/main/cpp/libs.manifest.json
+**/entry/src/main/cpp/libs/
+**/*.so
+
+# DevEco 生成的本地 C++ 语言服务配置
+**/.clangd
+**/.clang-tidy
