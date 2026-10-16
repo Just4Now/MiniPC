@@ -1,7 +1,7 @@
 import { hidebug } from '@kit.PerformanceAnalysisKit';
 import { batteryInfo, thermal } from '@kit.BasicServicesKit';
 import { DeviceInfoEntry, WireMessage } from '../protocol/ChatProtocol';
-import { deviceCapabilities, readyModelDirs } from '../llm/ModelRegistry';
+import { deviceCapabilities, deviceTier, readyModelDirs } from '../llm/ModelRegistry';
 
 // Lightweight status requests run often; multi-frame rosters are gated
 // separately by topology changes and a 30-second refresh interval.
@@ -106,7 +106,7 @@ export function formatHeat(batteryTemp: number, thermalLevel: number): string {
 export function buildSelfEntry(filesDir: string, running: number, deviceName: string, deviceId: string): DeviceInfoEntry {
   const mem = sampleMemory();
   const model = deployedModelName(filesDir);
-  return {
+  const entry: DeviceInfoEntry = {
     id: deviceId.length > 0 ? deviceId : 'self',
     name: deviceName.length > 0 ? deviceName : '本机',
     role: 'self',
@@ -121,10 +121,14 @@ export function buildSelfEntry(filesDir: string, running: number, deviceName: st
     capabilities: deployedCapabilities(filesDir),
     ready: true
   };
+  // 无就绪模型 → 0 → 省略字段（wire 缺省 = 老对端语义，消费侧按 2 处理）。
+  const tier = deviceTier(filesDir);
+  if (tier >= 1) entry.modelTier = tier;
+  return entry;
 }
 
 export function toDeviceInfoReply(requestId: string, entry: DeviceInfoEntry): WireMessage {
-  return {
+  const reply: WireMessage = {
     type: 'deviceInfo',
     requestId: requestId,
     name: entry.name || '',
@@ -139,6 +143,8 @@ export function toDeviceInfoReply(requestId: string, entry: DeviceInfoEntry): Wi
     capabilities: entry.capabilities || [],
     peerRole: 'compute'
   };
+  if (entry.modelTier !== undefined) reply.modelTier = entry.modelTier;
+  return reply;
 }
 
 export function applyDeviceInfo(target: DeviceInfoEntry, message: WireMessage): void {
@@ -152,6 +158,11 @@ export function applyDeviceInfo(target: DeviceInfoEntry, message: WireMessage): 
   if (typeof message.model === 'string') target.model = message.model;
   if (typeof message.modelRequests === 'number') target.modelRequests = message.modelRequests;
   if (Array.isArray(message.capabilities)) target.capabilities = message.capabilities;
+  // 新旧混布容忍：旧构建可能上报 3 档，消费侧一律归一成 2（强档）。
+  if (typeof message.modelTier === 'number' && Number.isInteger(message.modelTier) &&
+    message.modelTier >= 1 && message.modelTier <= 3) {
+    target.modelTier = message.modelTier === 1 ? 1 : 2;
+  }
 }
 
 export function formatComputeStatus(entry: DeviceInfoEntry | undefined): string {

@@ -28,6 +28,8 @@ export interface DeviceView {
   modelRequests?: number;
   /** Model capabilities of this device, e.g. ['text', 'vision']; absent means text-only. */
   capabilities?: string[];
+  /** Highest model-strength tier this device's manifests declare, 1-2 (1 weak, 2 strong); absent = 2 strong. */
+  modelTier?: number;
 }
 
 export interface JobView {
@@ -68,4 +70,6 @@ export interface ActiveJob {
   image: string;
   /** Experiment route that scheduled this job; empty for ordinary traffic. */
   routeMode: string;
+  /** Task tier (1-2: 1 simple, 2 complex) the hub classified this job into; 0 = not classified. */
+  taskTier?: number;
 }
