@@ -2,19 +2,20 @@ import { webview } from '@kit.ArkWeb';
 import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
 import { util } from '@kit.ArkTS';
+import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { LocalChat, ChatUpdate } from '../llm/LocalChat';
 import { InferCardHooks, InferenceHost } from '../llm/InferenceHost';
 import { InferenceRelay, RelayEvents } from '../llm/InferenceRelay';
 import { PoolNode } from '../cluster/DevicePool';
-import { nearbyChannel } from '../nearby/LinkEnhanceChannel';
+import { DeviceSpeed } from '../cluster/DeviceSpeed';import { nearbyChannel } from '../nearby/LinkEnhanceChannel';
 import { WireMessage, ChatMessage, ClusterInfo, DeviceInfoEntry } from '../protocol/ChatProtocol';
 import { IS_SERVER } from '../nearby/NearbyConfig';
 import { ComputeRouter, DispatchEntry, ScheduleNode, originKeyOf, pickRoute } from '../cluster/ComputeRouter';
 import { LocalLlmTransport } from '../llm/LlmTransport';
 import { pickJpegDataUrl } from '../media/ImageAttach';
 import {
-  DEVICE_INFO_POLL_MS, applyDeviceInfo, buildSelfEntry,
+  DEVICE_INFO_POLL_MS, applyDeviceInfo, buildSelfEntry, deployedModelName,
   toDeviceInfoReply
 } from '../cluster/DeviceInfo';
 import { chatLabel, computeLabel, hidePhoneName, publicLabel, workerTail } from '../cluster/DeviceLabels';
@@ -110,6 +111,7 @@ struct Index {
   private overlapArmed: boolean = false;
   private filesDir: string = '';
   private router: ComputeRouter = new ComputeRouter();
+  private deviceSpeed: DeviceSpeed = new DeviceSpeed();
   /** auto | split | pin1 | pin2. Only the hub's scheduleRequest consults this. */
   private routeMode: string = 'auto';
   /** Chat epoch -> 1 (this hub) or 2 (the other compute) while mode is split. */
@@ -157,6 +159,11 @@ struct Index {
       };
       this.relay = new InferenceRelay(this.router, (): PoolNode[] => this.poolNodes(), (): number[] => this.chatEpochs(),
         host, (message: WireMessage, epoch: number): Promise<boolean> => this.channel.send(message, epoch), events);
+      this.taskDisplay.log = (text: string): void => { hilog.warn(0, 'NearbyChat', '%{public}s', text); };
+      this.relay.setSpeed((epoch: number): number => this.deviceSpeed.cost(epoch));
+      this.relay.setAffinity((): boolean => {
+        try { return fileIo.accessSync(this.filesDir + '/session-reuse.on'); } catch (_) { return false; }
+      });
       host.setClusterProvider((): ClusterInfo | null => this.isComputeHub() ? this.relay?.load() ?? null : null);
       this.transport = new LocalLlmTransport(this.model);
     }
@@ -356,7 +363,8 @@ struct Index {
 
   private publishWorkerTasks(groups: TaskGroupView[]): void {
     if (!this.isComputeHub()) return;
-    this.taskDisplay.publish(groups, this.channel.peerInfos().filter((peer) => peer.ready && peer.role === 'compute')
+    this.taskDisplay.publish(groups.filter((group: TaskGroupView): boolean => !this.taskObserver.provisional(group.key)),
+      this.channel.peerInfos().filter((peer) => peer.ready && peer.role === 'compute')
       .map((peer) => peer.epoch), this.jobs.concat(this.finishedJobs).filter((job) => job.taskId !== undefined)
       .map((job) => Index.jobKey(job.epoch, job.taskId || '')));
   }
@@ -375,13 +383,11 @@ struct Index {
     if (IS_SERVER) this.publishWorkerTasks(groups);
     if (!IS_SERVER || !this.pageReady) return;
     const runningNow = this.jobs.filter((job: ActiveJob) => job.workerEpoch === 0).length;
-    // Same rule as the roster in pollDeviceInfo(): background telemetry yields to
-    // streaming inference. The counters below still update, so the next idle poll
-    // publishes the value that changed while a request was in flight.
-    if (this.serviceReady && this.jobs.length === 0 && runningNow !== this.lastPublishedRunning) {
+    // Publish small load changes during inference too; full telemetry can wait.
+    if (this.serviceReady && runningNow !== this.lastPublishedRunning) {
       const previousRunning = this.lastPublishedRunning;
       this.lastPublishedRunning = runningNow;
-      const status = toDeviceInfoReply('status-' + String(Date.now()), this.clusterSelfEntry());
+      const status = this.inferenceLoadStatus(runningNow);
       for (const peer of this.channel.peerInfos()) {
         if (peer.ready && peer.role === 'compute') this.channel.send(status, peer.epoch);
       }
@@ -450,7 +456,8 @@ struct Index {
       if (seen.indexOf(mark) >= 0) continue;
       seen.push(mark);
       devices.push({
-        epoch: -1, name: name, id: id || name, ready: extra.ready !== false, jobs: 0,
+        epoch: -1, name: name, id: id || name, ready: extra.ready !== false,
+        jobs: role === 'compute' ? Math.max(0, extra.modelRequests ?? 0) : 0,
         role: role, model: extra.model, memUsage: extra.memUsage,
         thermalLevel: extra.thermalLevel, batteryTemp: extra.batteryTemp, cpuUsage: extra.cpuUsage,
         modelRequests: extra.modelRequests
@@ -502,7 +509,7 @@ struct Index {
     if (!IS_SERVER && !connected) this.serviceReady = false;
     if (IS_SERVER) {
       const dropped = !this.channel.hasEpoch(epoch);
-      // Inference jobs are keyed by wire requestId inside InferenceHost, not by the board key.
+      // InferenceHost owns its per-request native identifiers and cancellation.
       if (dropped) {
         this.taskBoard.disconnect(epoch);
         this.taskObserver.disconnect(epoch);
@@ -822,7 +829,7 @@ struct Index {
     return epochs;
   }
 
-  /** Idle snapshot for routing: in-flight counts include hand-offs the devices have not reported yet. */
+  /** Load snapshot for routing: include hand-offs the devices have not reported yet. */
   private poolNodes(): PoolNode[] {
     const nodes: PoolNode[] = [];
     const self = this.selfEntry();
@@ -831,7 +838,7 @@ struct Index {
     own.label = this.selfComputeLabel();
     own.isSelf = true;
     own.ready = this.model !== null && !!self.model && self.model.length > 0;
-    own.inflight = Math.max(self.modelRequests === undefined ? 0 : self.modelRequests, this.inference?.isActive() ? 1 : 0);
+    own.inflight = Math.max(self.modelRequests === undefined ? 0 : self.modelRequests, this.inference?.activeCount() ?? 0);
     own.memAvail = self.memAvail === undefined ? -1 : self.memAvail;
     nodes.push(own);
     const peers = this.channel.peerInfos();
@@ -860,6 +867,9 @@ struct Index {
           fromChat ? this.selfComputeLabel() : computeLabel(epoch, this.channel.peerInfos()))) {
         this.taskObserver.suppress(Index.jobKey(epoch, message.task.id));
         this.emitDashboard();
+      } else {
+        hilog.warn(0, 'NearbyChat', 'infer.task dropped epoch=%{public}d revision=%{public}d fromChat=%{public}s fromHub=%{public}s',
+          epoch, message.task?.revision ?? -1, String(fromChat), String(fromHub));
       }
       return;
     }
@@ -1042,7 +1052,7 @@ struct Index {
   private handleDeviceInfo(message: WireMessage, epoch: number): void {
     if (message.memUsage !== undefined || message.model !== undefined ||
       message.thermalLevel !== undefined || message.batteryTemp !== undefined ||
-      message.cpuUsage !== undefined) {
+      message.cpuUsage !== undefined || message.modelRequests !== undefined) {
       let entry = this.peerStats.get(epoch);
       if (entry === undefined) {
         entry = { role: this.channel.peerRole(epoch) || 'compute' };
@@ -1111,6 +1121,11 @@ struct Index {
 
   private replyDeviceInfo(requestId: string, epoch: number): void {
     this.channel.send(toDeviceInfoReply(requestId, this.clusterSelfEntry()), epoch);
+  }
+
+  private inferenceLoadStatus(running: number): WireMessage {
+    return { type: 'deviceInfo', requestId: 'load-' + String(Date.now()),
+      model: deployedModelName(this.filesDir), modelRequests: running, peerRole: 'compute' };
   }
 
   private startMeshRetry(): void {
@@ -1182,6 +1197,9 @@ struct Index {
       // Chat peers neither consume the cluster roster nor supply scheduling
       // metrics. Avoid sending a multi-frame snapshot to every chat phone.
       if (peer.role !== 'compute') continue;
+      if (busy) {
+        this.channel.send(this.inferenceLoadStatus(this.jobs.filter((job: ActiveJob): boolean => job.workerEpoch === 0).length), peer.epoch);
+      }
       const prior = this.rosterDeliveries.get(peer.epoch);
       const changed = prior === undefined || prior.signature !== signature;
       const syncRoster = isHub && (changed || (!busy && !prior?.pending && now - (prior?.lastFullAt || 0) >= 30000));
@@ -1310,6 +1328,10 @@ struct Index {
       job.endedAt = Date.now();
       job.error = error;
       if (text && job.answer.length === 0) job.answer = text;
+      if (this.isComputeHub() && job.peer) {
+        this.deviceSpeed.record(job.workerEpoch, job.endedAt - job.startedAt,
+          (job.input === undefined ? 0 : job.input.length) + job.answer.length, error);
+      }
       this.taskObserver.end(job);
       this.jobs.splice(this.jobs.indexOf(job), 1);
       // A reused request id must not evict the earlier card with the same wire id.

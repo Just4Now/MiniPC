@@ -70,6 +70,13 @@ const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
 const reset = () => { state.script = {}; state.active = 0; state.peak = 0; state.created = []; state.namespaces = []; };
 
+test('split prompt keeps a part that needs another part\'s lookup in the same subtask', () => {
+  const prompt = splitter.buildSplitPrompt('查一下天气要穿几件衣服另外查一下研究所在哪里', '');
+  assert.match(prompt, /belongs in the same subtask as that lookup; never split it out\./);
+  assert.match(prompt, /"task":"查询上海周末的天气，并根据天气建议穿什么"/);
+  const parsed = splitter.parseSubtasks('[{"title":"上海天气与穿衣","task":"查询上海周末的天气，并根据天气建议穿什么"},{"title":"故宫开放时间","task":"查询故宫的开放时间"}]', '原始请求');
+  assert.equal(parsed.length, 2, 'the merged example form is accepted by the parser');
+});
 test('rule screen accepts bundled requests and rejects single ones', () => {
   assert.equal(splitter.shouldTrySplit(TASK), true);
   assert.equal(splitter.shouldTrySplit('北京天气怎么样？上海呢？'), true);
@@ -124,7 +131,7 @@ test('device reported by the transport reaches the sub-task row', async () => {
 test('a failed sub-task yields a partial answer and the merge prompt marks it unfinished', async () => {
   reset(); state.script = { '查询北京明天的天气': { error: '天气服务不可用' } };
   const h = build(); await h.run();
-  assert.match(h.log.mergePrompt, /未完成/); assert.match(h.log.mergePrompt, /天气服务不可用/);
+  assert.match(h.log.mergePrompt, /unfinished/); assert.match(h.log.mergePrompt, /天气服务不可用/);
   assert.equal(h.seen.events.at(-1).status, PARTIAL);
 });
 test('merge failure falls back to per-sub-task sections and stays partial', async () => {

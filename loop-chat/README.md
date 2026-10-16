@@ -155,7 +155,22 @@ import { ReActAgentRunner, ToolRegistry, createLoopModel } from '@loop/agent-cor
 
 ## Conversation memory
 
+The chat header has an **Agent** switch. It defaults to **off** and remembers the
+last selection across restarts. Off uses ordinary chat: one model completion on
+the compute device, sending only the current message and attachment text, bypassing skills,
+tool initialization/execution, task splitting, and final-answer review. On uses
+the existing Agent workflow. Stop the current response before switching modes.
+Both modes keep the visible saved transcript and attachment text support. Ordinary
+chat does not send previous questions or answers to the model; Agent mode retains
+its existing conversation context.
+
 Loop keeps a history of user messages and final assistant answers in `ConversationContext`. Each successful run appends one user/assistant pair; failed runs are not stored. History is persisted to device preferences via `ConversationStore` and restored on launch (last 50 turns). Use **Clear** to reset the session and wipe stored history.
+
+Near-field connections now survive an app background transition without cancelling
+inference. While connected, each app requests the system's multi-device continuous
+task, which can show a background-task notification. The last disconnect or ability
+destruction releases the task. Discovery scans pause in the background; existing
+connections continue to deliver results. Keep-screen-on is still foreground-only.
 
 ## Android parity notes
 

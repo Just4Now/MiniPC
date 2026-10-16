@@ -31,6 +31,13 @@ export class DispatchEntry {
   accepted: boolean = false;
   /** Streamed text so far, for the task card. */
   answer: string = '';
+  /** The original request, kept so a lost hand-off can be re-issued to another device. */
+  request: Object | undefined = undefined;
+  /** Devices already tried for this request (never picked again), and how many re-issues happened. */
+  tried: number[] = [];
+  attempts: number = 0;
+  /** The requester asked to stop (or went away): a cancellation is then not a failure to retry. */
+  cancelRequested: boolean = false;
 }
 
 export function nodeLoad(node: ScheduleNode): number {

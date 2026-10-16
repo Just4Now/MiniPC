@@ -205,6 +205,13 @@ test('numeric claims checked against matching call only', () => {
 test('full and compact prompts always retain User task and full contract', async () => {
   for (const compact of [false,true]) { const r=await run('任务甲 😀 Unicode',['Final: 好'],{}, {compact}); assert.match(r.prompts[0],/User task:\n任务甲 😀 Unicode/); assert.match(r.prompts[0],/IMMUTABLE_CONTRACT/); }
 });
+test('every round tells the model that writing needs no tool and side-effect tools need an explicit request', async () => {
+  const r=await run('请写一篇不超过200字的科幻微小说',['Final: 故事'],{});
+  assert.match(r.prompts[0],/Writing, rewriting, summarizing, translating and explaining need no tool: reply with Final directly\./);
+  assert.match(r.prompts[0],/only when the user explicitly asks for that action/);
+  const tool=await run('计算1加1',[action('calculator',{expression:'1+1'}),'Final: 2'],{calculator:'2'});
+  assert.match(tool.prompts[1],/Writing, rewriting, summarizing/,'the evidence round keeps the same contract');
+});
 test('budget keeps UTF8 task contracts and entire latest parallel turn', () => {
   const base='TOOLS合同😀\nUser task:\n北京天气🌤️\n';
   const latest='Execution: parallel\nAction: weather_search[{"query":"北京"}]\nAction: air_quality[{"query":"北京"}]\nObservation: 北京😀\nObservation: 空气🌤️';

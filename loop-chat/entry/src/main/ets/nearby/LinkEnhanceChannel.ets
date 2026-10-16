@@ -210,6 +210,7 @@ export class LinkEnhanceChannel {
   private onInference: ((message: WireMessage, epoch: number) => void) | null = null;
   private onInferenceLink: ((droppedEpoch: number) => void) | null = null;
   private onConnection: ((connected: boolean, epoch: number) => void) | null = null;
+  private onActivity: ((connected: boolean) => void) | null = null;
   private status: string = IS_SERVER ? '可本机对话 · 请启用近场连接' : '正在寻找算力设备…';
   private selfSlot: number = 0;
   private scanCancel: (() => void) | null = null;
@@ -218,7 +219,15 @@ export class LinkEnhanceChannel {
   initialize(context: common.UIAbilityContext): void { this.context = context; }
   operation(): number { return this.lifecycle; }
   resume(): void { this.foreground = true; }
-  suspend(): void { this.foreground = false; this.disconnect(); }
+  suspend(): void { this.foreground = false; this.cancelScan(); }
+  setActivityListener(listener: ((connected: boolean) => void) | null): void {
+    this.onActivity = listener;
+    listener?.(this.isConnected());
+  }
+  private notifyConnection(connected: boolean, epoch: number): void {
+    this.onActivity?.(connected);
+    this.onConnection?.(connected, epoch);
+  }
   isForeground(): boolean { return this.foreground; }
   private checkOperation(operation: number): void {
     if (!this.foreground || operation !== this.lifecycle || this.context === null) {
@@ -868,7 +877,7 @@ export class LinkEnhanceChannel {
           hilog.info(0, 'NearbyChat', 'le-chat slot=%{public}d', slot);
         }
       }
-      this.onConnection?.(true, peer.epoch);
+      this.notifyConnection(true, peer.epoch);
       return;
     }
     if (!IS_SERVER && message.type === 'prepared') {
@@ -900,7 +909,7 @@ export class LinkEnhanceChannel {
     this.refreshStatus();
     hilog.info(0, 'NearbyChat', 'le-ready epoch=%{public}d peer=%{public}s peers=%{public}d',
       peer.epoch, peer.peerId, this.connectedCount());
-    this.onConnection?.(true, peer.epoch);
+    this.notifyConnection(true, peer.epoch);
   }
 
   async send(message: WireMessage, expectedEpoch?: number): Promise<boolean> {
@@ -969,7 +978,7 @@ export class LinkEnhanceChannel {
 
   private update(status: string): void {
     this.status = status;
-    this.onConnection?.(this.isConnected(), this.epoch);
+    this.notifyConnection(this.isConnected(), this.epoch);
   }
 
   private drop(peer: Peer, status: string): void {
@@ -991,7 +1000,7 @@ export class LinkEnhanceChannel {
       (this.server !== null ? '可本机对话 · 等待聊天手机连接' : status) : status;
     else this.refreshStatus();
     this.onInferenceLink?.(peer.epoch);
-    this.onConnection?.(this.isConnected(), peer.epoch);
+    this.notifyConnection(this.isConnected(), peer.epoch);
   }
 
   inferenceReady(): boolean {

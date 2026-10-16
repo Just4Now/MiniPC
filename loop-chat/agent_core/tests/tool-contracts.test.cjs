@@ -236,7 +236,7 @@ test('final review is a generic evidence phase with no replayed action and prese
  for(const task of ['读取资料并解释结论，再写一首诗','先核对数据，我还想知道建议的规模和理由']){
   const r=await run(probes('arbitrary.lookup'),task,[action('arbitrary.lookup',{key:'A'}),'Final: value 10','Final: value 10. 建议规模为两组，理由是易于比较。云随风起。'],{finalReview:true});
   assert.equal(r.prompts.length,3);assert.equal(r.events.filter(e=>e.kind===K.ACTION).length,1);assert.match(r.final,/两组/);assert.match(r.final,/云随风起/);
-  assert.match(r.prompts[2],/Final review phase/);assert.match(r.prompts[2],new RegExp(task));assert.match(r.prompts[2],/调用：call-1/);assert.ok(!r.prompts[2].includes(action('arbitrary.lookup',{key:'A'})));
+  assert.match(r.prompts[2],/Final review phase/);assert.match(r.prompts[2],new RegExp(task));assert.match(r.prompts[2],/call: call-1/);assert.ok(!r.prompts[2].includes(action('arbitrary.lookup',{key:'A'})));
  }
 });
 test('review cannot execute another tool or repeatedly request a new review',async()=>{

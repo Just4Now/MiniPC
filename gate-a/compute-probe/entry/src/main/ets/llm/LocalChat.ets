@@ -1,5 +1,6 @@
 import probe from 'libgewu_probe.so';
 import { fileIo } from '@kit.CoreFileKit';
+import { SessionPlan, SessionReuse } from './SessionReuse';
 
 export interface ChatMessage { role: string; content: string; }
 export interface ChatUpdate { kind: 'delta' | 'done'; text: string; error?: string; finishReason?: string; }
@@ -16,7 +17,9 @@ interface Job {
   answer: string;
   failure: string;
   finishReason: string;
+  delivered: boolean;
   callback: ((update: ChatUpdate) => void) | undefined;
+  plan: SessionPlan | undefined;
 }
 
 export class LocalChat {
@@ -24,10 +27,21 @@ export class LocalChat {
   private timer: number = -1;
   private closed: boolean = false;
   private jobs: Job[] = [];
+  private reuse: SessionReuse = new SessionReuse((key: string): void => {
+    try { probe.closeSession(key); } catch (_) { /* older native library: nothing cached */ }
+  });
 
   constructor(filesDir: string) { this.filesDir = filesDir; }
-  isBusy(): boolean { return this.jobs.length > 0; }
-  activeCount(): number { return this.jobs.length; }
+  isBusy(): boolean { return this.activeCount() > 0; }
+
+  /**
+   * Session reuse is off unless <filesDir>/session-reuse.on exists, so the default path is
+   * the original one-session-per-request behaviour.
+   */
+  private reuseEnabled(): boolean {
+    try { return fileIo.accessSync(this.filesDir + '/session-reuse.on'); } catch (_) { return false; }
+  }
+  activeCount(): number { return this.jobs.filter((job: Job): boolean => !job.delivered).length; }
 
   // Basic readiness only: leave GEWU initialization to the actual request.
   readinessError(): string {
@@ -56,16 +70,28 @@ export class LocalChat {
       options.waitSeconds as number : 0;
     // Streaming callbacks replace a character split across chunks with U+FFFD.
     // One complete response keeps those bytes together and decodes the character.
-    const request: ChatRequest = { type: 'qwen2', messages: messages, stream: false, max_tokens: maxTokens };
+    const plan: SessionPlan | undefined = this.reuseEnabled() ? this.reuse.plan(messages) : undefined;
+    const sent = plan !== undefined ? plan.messages : messages;
+    const request: ChatRequest = { type: 'qwen2', messages: sent, stream: false, max_tokens: maxTokens };
     let nativeId = 0;
     try {
-      nativeId = probe.start(this.filesDir + '/models/Qwen2.5-7B-Instruct-Q4_N_0', JSON.stringify(request),
-        this.filesDir + '/gewu-chat.jsonl', waitSeconds);
-    } catch (_) { return '无法启动模型，请确认模型文件已部署。'; }
-    if (nativeId <= 0) return '模型繁忙，请稍后再发。';
+      const model = this.filesDir + '/models/Qwen2.5-7B-Instruct-Q4_N_0';
+      if (plan !== undefined && plan.key.length > 0) {
+        nativeId = probe.start(model, JSON.stringify(request), this.filesDir + '/gewu-chat.jsonl', waitSeconds, plan.key);
+      } else {
+        nativeId = probe.start(model, JSON.stringify(request), this.filesDir + '/gewu-chat.jsonl', waitSeconds);
+      }
+    } catch (_) {
+      if (plan !== undefined) this.reuse.finish(plan, false);
+      return '无法启动模型，请确认模型文件已部署。';
+    }
+    if (nativeId <= 0) {
+      if (plan !== undefined) this.reuse.finish(plan, false);
+      return '模型繁忙，请稍后再发。';
+    }
     this.jobs.push({
       requestId: requestId, nativeId: nativeId, cancelled: false, answer: '', failure: '',
-      finishReason: '', callback: callback
+      finishReason: '', delivered: false, callback: callback, plan: plan
     });
     if (this.timer === -1) this.timer = setInterval(() => this.consumeEvents(), 80);
     return '';
@@ -78,7 +104,7 @@ export class LocalChat {
       probe.cancel();
       return;
     }
-    const job = this.jobs.find((item: Job) => item.requestId === requestId);
+    const job = this.jobs.find((item: Job) => item.requestId === requestId && !item.delivered);
     if (job === undefined) return;
     job.cancelled = true;
     probe.cancel(job.nativeId);
@@ -88,6 +114,7 @@ export class LocalChat {
     this.closed = true;
     for (const job of this.jobs) job.callback = undefined;
     this.cancel();
+    this.reuse.closeAll();
     if (this.timer !== -1) clearInterval(this.timer);
     this.timer = -1;
   }
@@ -111,7 +138,7 @@ export class LocalChat {
       if ((event.event === 'create' || event.event === 'submit' || event.event === 'destroy') &&
         event.payload !== '0') job.failure = '模型请求失败（' + event.event + ': ' + event.payload + '），请重试。';
       if (event.event === 'abort') job.cancelled = true;
-      if (event.event === 'response' && !job.cancelled && !job.failure) {
+      if (event.event === 'response' && !job.delivered && !job.cancelled && !job.failure) {
         let response: NativeResponse;
         try { response = JSON.parse(event.payload) as NativeResponse; }
         catch (_) { this.parseFailure(job); continue; }
@@ -126,7 +153,11 @@ export class LocalChat {
         } else if (job.answer.length > 0) {
           // stream:false has exactly one response; native already treats it as terminal.
           job.finishReason = 'stop';
+          probe.complete(job.nativeId);
         }
+        // stream:false is a complete answer. Return it before native session
+        // teardown; keep the job only for cleanup and session-cache ownership.
+        if (job.finishReason.length > 0) { this.deliver(job); }
       }
       if (event.event === 'end') {
         if (event.payload === 'stalled' && job.answer.length === 0 && job.failure.length === 0) {
@@ -144,6 +175,19 @@ export class LocalChat {
 
   private finish(job: Job): void {
     if (this.jobs.indexOf(job) < 0) return;
+    this.deliver(job);
+    if (job.plan !== undefined) {
+      this.reuse.finish(job.plan, !job.failure && !job.cancelled && job.answer.length > 0);
+    }
+    this.jobs.splice(this.jobs.indexOf(job), 1);
+    if (this.jobs.length === 0 && this.timer !== -1) {
+      clearInterval(this.timer);
+      this.timer = -1;
+    }
+  }
+
+  private deliver(job: Job): void {
+    if (job.delivered) return;
     if (!job.failure && !job.cancelled && (!job.answer || !job.finishReason)) {
       job.failure = job.answer ? '模型回复意外中断，请重试。' : '模型没有返回内容，请重试。';
     }
@@ -155,11 +199,7 @@ export class LocalChat {
     if (job.failure) update.error = job.failure;
     const callback = job.callback;
     job.callback = undefined;
-    this.jobs.splice(this.jobs.indexOf(job), 1);
-    if (this.jobs.length === 0 && this.timer !== -1) {
-      clearInterval(this.timer);
-      this.timer = -1;
-    }
+    job.delivered = true;
     if (callback) callback(update);
   }
 }

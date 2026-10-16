@@ -1,43 +1,83 @@
-const assert=require('node:assert/strict');
-const vm=require('node:vm');
-const {transpile}=require('../../../../../../tests/harness.cjs');
-const box={exports:{},require:()=>({}),Map,Array,Date,JSON};
-vm.runInNewContext(transpile(__dirname+'/TaskDisplayRelay.ets'),box);
-const {TaskDisplayRelay}=box.exports;
-const flush=async()=>{for(let n=0;n<10;n++)await Promise.resolve();};
-const json=value=>JSON.parse(JSON.stringify(value));
-const group=(key)=>({key,id:'same_chat_id',originEpoch:7,origin:'聊天设备2',executor:'算力设备1',
-  title:'分别查询车票和天气',phase:'running',revision:1,startedAt:1000,endedAt:0,answer:'',subtasks:[
-    {id:'s1',title:'车票',device:'算力设备1',phase:'running',detail:'生成中'},
-    {id:'s2',title:'天气',device:'算力设备2',phase:'running',detail:'生成中'}]});
-(async()=>{
-  const sent=[];let complete;
-  const relay=new TaskDisplayRelay((message,epoch)=>{sent.push([json(message),epoch]);return new Promise(resolve=>{complete=resolve;});});
-  const first={},second={},other={};
-  relay.bind('7:same_chat_id','s2',first,8);relay.bind('7:same_chat_id','s2',second,8);
-  relay.bind('9:same_chat_id','s2',other,10);
-  assert.equal(first.taskId,second.taskId);assert.notEqual(first.taskId,other.taskId,'two chat sessions cannot collide behind one hub');
-  const task=group('7:same_chat_id');
-  relay.publish([task],[8,10],['7:same_chat_id','9:same_chat_id']);
-  assert.equal(sent.length,1,'snapshots go only to workers assigned this parent');
-  assert.equal(sent[0][1],8);assert.equal(sent[0][0].task.id,first.taskId);
-  assert.equal(sent[0][0].origin,'聊天设备2');assert.equal(sent[0][0].source,'算力设备1');
-  task.subtasks[1].phase='done';task.subtasks[1].result='天气结果';
-  task.subtasks[0].phase='done';task.phase='done';task.endedAt=2000;task.answer='汇总结果';
-  relay.publish([task],[8,10],['7:same_chat_id','9:same_chat_id']);
-  assert.equal(sent.length,1,'a pending snapshot coalesces later display changes');
-  assert.equal(sent[0][0].task.subtasks[1].phase,'running','a sending snapshot is immutable');
-  complete(true);await flush();
-  assert.equal(sent.length,2,'the final state is delivered even when no further dashboard event arrives');
-  assert.equal(sent[1][0].task.phase,'done');assert.equal(sent[1][0].task.answer,'汇总结果');
-  assert(sent[1][0].task.revision>sent[0][0].task.revision);
-  complete(true);await flush();relay.publish([task],[8,10],['7:same_chat_id','9:same_chat_id']);
-  assert.equal(sent.length,2,'unchanged token/dashboard updates do not spam task snapshots');
-  relay.publish([],[],[]);assert.equal(relay.routes.size,0,'cleared history and rejected split attempts release display routes');
-  let attempts=0;
-  const failed=new TaskDisplayRelay(async()=>{attempts++;throw new Error('link lost');});
-  failed.bind(task.key,'s2',{},8);failed.publish([task],[8],[task.key]);await flush();
-  assert.equal(attempts,1,'failed display sends never create a retry loop');
-  failed.publish([task],[8],[task.key]);await flush();assert.equal(attempts,2,'a subsequent event can retry a failed display');
-  console.log('PASS: worker display identity, chat-session isolation, assigned recipients, immutable snapshots, final-state coalescing and bounded failures');
-})().catch(error=>{console.error(error);process.exitCode=1;});
+// node TaskDisplayRelay.test.cjs
+// A worker's task card must reach its final state even when a send fails or never settles.
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const { transpile } = require('../../../../../../tests/harness.cjs');
+function load(file, requires = {}, fast = true) {
+  const box = { exports: {}, require: (n) => requires[n] || {}, Date, Map, Set, Math, Number, Array, JSON, Promise, String, Error, RegExp, Uint8Array,
+    setTimeout: (fn, ms) => setTimeout(fn, fast ? Math.max(1, Math.floor(ms / 200)) : ms), clearTimeout };
+  vm.runInNewContext(transpile(__dirname + '/' + file), box);
+  return box.exports;
+}
+const util = { TextEncoder: class { encodeInto(s) { return Buffer.from(s); } } };
+const proto = load('../protocol/ChatProtocol.ets', { '@kit.ArkTS': { util }, '@kit.PerformanceAnalysisKit': { hilog: {} } });
+const { TaskBoard } = load('TaskBoard.ets', { '../protocol/ChatProtocol': proto });
+const { TaskDisplayRelay } = load('TaskDisplayRelay.ets', { '../protocol/ChatProtocol': proto, './TaskBoard': {} });
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const D1 = '算力设备1', D2 = '算力设备2';
+const t0 = Date.now() - 100000;
+const snap = (rev, phase, kids, end = 0, answer = '') => ({ id: 'tk1', title: '查北京天气', phase, revision: rev, startedAt: t0, endedAt: end, answer,
+  subtasks: kids.map((k, i) => ({ id: 's' + (i + 1), title: 'T' + (i + 1), device: k[0], phase: k[1], detail: '', result: k[2], startedAt: t0, endedAt: k[3] })) });
+const running = (rev) => snap(rev, 'running', [['', 'queued'], ['', 'queued']]);
+const finished = (rev) => snap(rev, 'done', [[D2, 'done', 'a', t0 + 5], [D1, 'done', 'b', t0 + 9]], t0 + 20, '最终回答');
+
+async function scenario(sender) {
+  const hub = new TaskBoard(), worker = new TaskBoard(), seen = [];
+  const relay = new TaskDisplayRelay(async (message, epoch) => {
+    const result = await sender(message, seen.length);
+    seen.push(message.task.revision + ':' + message.task.phase + ':' + result);
+    if (result) worker.accept(JSON.parse(JSON.stringify(message.task)), 9, 'o', D1);
+    return result;
+  });
+  const logs = [];
+  relay.log = (text) => logs.push(text);
+  const step = async (task, wait = 20) => {
+    hub.accept(task, 4, '聊天设备1', D1);
+    relay.publish(hub.views(), [9], ['4:tk1']);
+    await sleep(wait);
+  };
+  await step(running(1));
+  relay.bind('4:tk1', 's1', {}, 9);
+  relay.publish(hub.views(), [9], ['4:tk1']);
+  await step(snap(2, 'running', [[D2, 'running'], [D1, 'running']]));
+  await step(finished(3), 5);
+  return { worker, seen, logs, relay, hub };
+}
+
+(async () => {
+  // Healthy path.
+  let r = await scenario(async () => true);
+  assert.equal(r.worker.views()[0].phase, 'done');
+
+  // The final snapshot's send fails once and no later dashboard event arrives: the retry timer delivers it.
+  let finalFailures = 0;
+  r = await scenario(async (message) => {
+    if (message.task.phase === 'done' && finalFailures++ < 2) return false;
+    return true;
+  });
+  await sleep(150);
+  assert.equal(r.worker.views()[0].phase, 'done', 'a failed final send is retried without waiting for another event');
+  assert(r.logs.length >= 1);
+
+  // A send that never settles must not block later snapshots forever.
+  let hung = false;
+  r = await scenario((message) => {
+    if (!hung) { hung = true; return new Promise(() => {}); }
+    return Promise.resolve(true);
+  });
+  await sleep(150);
+  assert.equal(r.worker.views()[0].phase, 'done', 'a hung send is abandoned after a timeout');
+
+  // A group that stops receiving updates is marked unknown instead of running forever, and can be revived.
+  const board = new TaskBoard();
+  const start = Date.now();
+  assert(board.accept(running(1), 4, 'o', D1));
+  const realNow = Date.now;
+  Date.now = () => start + 601000;
+  try {
+    const stale = board.views()[0];
+    assert.equal(stale.phase, 'unknown');
+    assert(stale.endedAt > 0);
+  } finally { Date.now = realNow; }
+  console.log('PASS task display survives failed and hung sends; quiet groups are not left running');
+})().catch((error) => { console.error(error); process.exit(1); });

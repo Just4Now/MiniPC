@@ -117,7 +117,7 @@ export class ToolRegistry {
       const declaration = this.contractCatalog.get(tool.name());
       if (declaration !== undefined) {
         description += '  Input format: ' + declaration.inputFormat + '. Schema: ' + JSON.stringify(declaration.inputSchema ?? {}) + '\n';
-        if ((declaration.evidenceFields ?? []).length > 0) { description += '  Answer evidence: ' + JSON.stringify(declaration.evidenceFields) + '. Scope fields: ' + JSON.stringify(declaration.answerScopeFields ?? []) + '\n'; }
+        if ((declaration.evidenceFields ?? []).length > 0) { const scope = declaration.answerScopeFields ?? []; description += '  Answer evidence: ' + JSON.stringify(declaration.evidenceFields) + (scope.length > 0 ? '. Scope fields: ' + JSON.stringify(scope) : '') + '\n'; }
       }
     });
     return description;

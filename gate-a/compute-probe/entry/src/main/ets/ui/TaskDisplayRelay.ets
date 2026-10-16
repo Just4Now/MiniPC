@@ -1,7 +1,10 @@
 import { TaskChildSnapshot, TaskSnapshot, WireMessage } from '../protocol/ChatProtocol';
 import { TaskGroupView } from './TaskBoard';
 
-interface DisplayTarget { epoch: number; signature: string; pending: boolean; }
+interface DisplayTarget { epoch: number; signature: string; pending: boolean; failures: number; retry: number; }
+const SEND_TIMEOUT_MS = 8000;
+const RETRY_MS = 2000;
+const MAX_FAILURES = 8;
 interface DisplayRoute {
   id: string;
   revision: number;
@@ -16,6 +19,9 @@ export class TaskDisplayRelay {
   private serial: number = 0;
   private routes: Map<string, DisplayRoute> = new Map();
   private sender: (message: WireMessage, epoch: number) => Promise<boolean>;
+  private readyEpochs: number[] = [];
+  /** Optional diagnostics sink; display delivery never affects inference. */
+  log: (text: string) => void = (_text: string): void => {};
 
   constructor(sender: (message: WireMessage, epoch: number) => Promise<boolean>) { this.sender = sender; }
 
@@ -28,7 +34,7 @@ export class TaskDisplayRelay {
       this.routes.set(key, route);
     }
     if (!route.targets.some((target: DisplayTarget): boolean => target.epoch === workerEpoch)) {
-      route.targets.push({ epoch: workerEpoch, signature: '', pending: false });
+      route.targets.push({ epoch: workerEpoch, signature: '', pending: false, failures: 0, retry: -1 });
     }
     // The worker sees the hub's session, so namespace otherwise identical chat IDs.
     request.taskId = route.id;
@@ -36,6 +42,7 @@ export class TaskDisplayRelay {
   }
 
   publish(groups: TaskGroupView[], readyWorkers: number[], retainedKeys: string[]): void {
+    this.readyEpochs = readyWorkers;
     for (const entry of this.routes) {
       const route = entry[1];
       const group = groups.find((item: TaskGroupView): boolean => item.key === entry[0]);
@@ -61,16 +68,43 @@ export class TaskDisplayRelay {
     }
   }
 
+  /**
+   * One snapshot at a time per worker. A send that fails, throws or never settles must not
+   * stall the display: the timeout frees the slot and a retry timer re-sends the newest state
+   * even if no later dashboard event arrives (the final snapshot has none after it).
+   */
   private async deliver(route: DisplayRoute, target: DisplayTarget, message: WireMessage, signature: string): Promise<void> {
     target.pending = true;
-    try { if (await this.sender(message, target.epoch)) target.signature = signature; }
-    catch (_error) { /* Display delivery cannot fail inference or trigger a model retry. */ }
-    finally {
-      target.pending = false;
-      // A newer state may have arrived while the previous snapshot was sending.
-      if (route.signature !== signature && route.message !== undefined && Array.from(this.routes.values()).includes(route)) {
-        this.deliver(route, target, route.message, route.signature);
-      }
+    let sent = false;
+    try {
+      sent = await Promise.race([this.sender(message, target.epoch),
+        new Promise<boolean>((resolve: (value: boolean) => void): void => { setTimeout((): void => resolve(false), SEND_TIMEOUT_MS); })]);
+    } catch (_error) { sent = false; }
+    target.pending = false;
+    if (sent) {
+      target.signature = signature;
+      target.failures = 0;
+    } else {
+      target.failures++;
+      this.log('task display send failed epoch=' + target.epoch.toString() + ' revision=' + route.revision.toString() +
+        ' failures=' + target.failures.toString());
     }
+    if (!Array.from(this.routes.values()).includes(route) || route.message === undefined) return;
+    // A newer state may have arrived while the previous snapshot was sending.
+    if (route.signature !== signature) {
+      this.deliver(route, target, route.message, route.signature);
+      return;
+    }
+    if (!sent && target.failures < MAX_FAILURES) this.scheduleRetry(route, target);
+  }
+
+  private scheduleRetry(route: DisplayRoute, target: DisplayTarget): void {
+    if (target.retry >= 0) return;
+    target.retry = setTimeout((): void => {
+      target.retry = -1;
+      if (target.pending || route.message === undefined || target.signature === route.signature) return;
+      if (!this.readyEpochs.includes(target.epoch) || !Array.from(this.routes.values()).includes(route)) return;
+      this.deliver(route, target, route.message, route.signature);
+    }, RETRY_MS) as number;
   }
 }

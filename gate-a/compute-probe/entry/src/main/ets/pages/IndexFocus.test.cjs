@@ -43,7 +43,7 @@ function setup(isServer) {
       async runJavaScript(script) { events.push(JSON.parse(script.slice('window.onNativeEvent('.length, -1))); }
     } } };
     if (name === '@kit.ArkTS') return { util: { generateRandomUUID: () => 'request-1' } };
-    if (name === '@kit.PerformanceAnalysisKit') return { hilog: { info() {} } };
+    if (name === '@kit.PerformanceAnalysisKit') return { hilog: { info() {}, warn() {} } };
     if (name === '../nearby/LinkEnhanceChannel') {
       return { nearbyChannel: channel };
     }
@@ -55,6 +55,9 @@ function setup(isServer) {
       cancel(id) { this.chat.cancel(id); }
       readinessError() { return this.chat.readinessError(); }
     } };
+    if (name === '../cluster/DeviceSpeed') {
+      return loadEts(__dirname + '/../cluster/DeviceSpeed.ets');
+    }
     if (name === '../cluster/ComputeRouter') {
       return loadEts(__dirname + '/../cluster/ComputeRouter.ets');
     }
@@ -414,7 +417,9 @@ function setup(isServer) {
   quiet.page.emitDashboard = () => {};
   quiet.page.jobs.push({ id: 'busy', workerEpoch: 0 });
   quiet.page.pollDeviceInfo();
-  assert.equal(quiet.sent.length, 0, 'background polling must not compete with inference traffic');
+  assert.equal(quiet.sent.length, 1, 'busy polling publishes only a small load status');
+  assert.equal(quiet.sent[0].modelRequests, 1);assert.equal(quiet.sent[0].type, 'deviceInfo');
+  assert.equal(quiet.sent[0].memUsage, undefined);
 
   const order = setup(true);
   order.page.pageReady = true;
@@ -493,7 +498,7 @@ function setup(isServer) {
   console.log('PASS: busy multi-node membership, per-session retry and stale completion isolation');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
-// Background telemetry yields to streaming inference, and a chat link dropping is
+// Lightweight load changes remain visible during inference, and a chat link dropping is
 // reported rather than left as a silent gap the compute side cannot repair itself.
 {
   const s = setup(true);
@@ -503,22 +508,20 @@ function setup(isServer) {
     { epoch: 2, peerId: 'worker', deviceUid: 'worker', ready: true, role: 'compute', name: '算力设备2', slot: 2 },
     { epoch: 1, peerId: 'chat', deviceUid: 'chat', ready: true, role: 'chat', name: '聊天设备1', slot: 1 }
   ];
-  // A chat request lands while the hub has a local job, so the running count changes
-  // mid-stream. The status push must wait for the stream to finish.
+  // A chat request lands while the hub has a local job: publish the count now.
   s.page.jobs.push({ id: 'busy', key: '0:busy', epoch: 0, peer: false, workerEpoch: 0,
     answer: '', question: 'q', startedAt: 0, firstAt: 0, endedAt: 0, error: false, source: '', origin: '本机', image: '' });
-  // Pretend the last published value was 1, so ending the job is a real transition.
-  s.page.lastPublishedRunning = 1;
+  s.page.lastPublishedRunning = 0;
   s.sent.length = 0;
   s.page.emitDashboard();
-  assert.equal(s.sent.filter(m => m.type === 'deviceInfo' && String(m.requestId).indexOf('status-') === 0).length, 0,
-    'no background status push while an inference is in flight');
-  assert.equal(s.page.lastPublishedRunning, 1, 'the pending count is not published early');
+  assert.equal(s.sent.filter(m => m.type === 'deviceInfo' && String(m.requestId).indexOf('load-') === 0).length, 1);
+  assert.equal(s.sent[0].modelRequests, 1);assert.equal(s.sent[0].memUsage, undefined);
+  assert.equal(s.page.lastPublishedRunning, 1);
   s.page.jobs.length = 0;
   s.page.emitDashboard();
-  const pushed = s.sent.filter(m => m.type === 'deviceInfo' && String(m.requestId).indexOf('status-') === 0);
-  assert.equal(pushed.length, 1, 'the deferred count is published once the stream ends');
-  assert.equal(pushed[0].modelRequests, 0, 'and it carries the settled value');
+  const pushed = s.sent.filter(m => m.type === 'deviceInfo' && String(m.requestId).indexOf('load-') === 0);
+  assert.equal(pushed.length, 2, 'start and completion both publish load changes');
+  assert.equal(pushed[1].modelRequests, 0);
 
   // A chat phone disappearing cannot be re-dialled from here.
   const t = setup(true);
@@ -529,8 +532,69 @@ function setup(isServer) {
   t.page.connectionChanged(false, 6);
   const status = t.events.filter(e => e.kind === 'connection').at(-1);
   assert(status.text.includes('等待它自动重连'), 'a lost chat link says who has to re-dial: ' + status.text);
-  console.log('PASS: status push defers to inference; a lost chat link is reported as the chat side\'s to re-dial');
+  console.log('PASS: small start/stop load pushes during inference; a lost chat link is reported as the chat side\'s to re-dial');
 }
+
+{
+  const hub=setup(true),worker=setup(true);
+  hub.page.serviceReady=true;worker.page.serviceReady=true;worker.channel.selfComputeNumber=()=>2;worker.channel.selfLabel=()=> '算力设备2';
+  hub.channel.peerInfos=()=>[{epoch:7,peerId:'worker',deviceUid:'worker',ready:true,role:'compute',name:'算力设备2',slot:2}];
+  worker.channel.peerInfos=()=>[{epoch:1,peerId:'hub',deviceUid:'hub',ready:true,role:'compute',name:'算力设备1',slot:1}];
+  hub.page.showRelayTask('r',5,7,[{role:'user',content:'问题'}],'普通聊天');
+  worker.page.showInferTask('forward',1,'问题','普通聊天');
+  const busy=worker.sent.filter(m=>m.modelRequests===1).at(-1);assert(busy);
+  hub.page.handleDeviceInfo(busy,7);
+  const hd=hub.events.filter(e=>e.kind==='dashboard').at(-1),wd=worker.events.filter(e=>e.kind==='dashboard').at(-1);
+  assert.equal(hd.running,0,'hub forwarding work is not local inference');
+  assert.equal(hd.devices.find(d=>d.role==='self').jobs,0);assert.equal(hd.devices.find(d=>d.epoch===7).jobs,1);
+  assert.equal(wd.running,1);assert.equal(wd.devices.find(d=>d.role==='self').jobs,1);
+  worker.page.finishInferTask('forward',1,'答案',false);hub.page.completeJob('r',5,'答案',false);
+  const stopped=worker.sent.filter(m=>m.requestId?.startsWith('load-')&&m.modelRequests===0).at(-1);assert(stopped);
+  hub.page.handleDeviceInfo(stopped,7);
+  assert.equal(hub.events.filter(e=>e.kind==='dashboard').at(-1).devices.find(d=>d.epoch===7).jobs,0);
+  const before=hub.sent.length;hub.page.handleDeviceInfo({type:'deviceInfo',requestId:'count-only',modelRequests:0},7);
+  assert.equal(hub.sent.length,before,'a count-only response must not trigger a response loop');
+  console.log('PASS: actual hub/worker dashboard counts and load-only responses remain correct through a forwarded request');
+}
+
+// A split answered by the worker lets the hub observe a provisional parent before the chat's
+// snapshot arrives. Publishing it locked the worker onto that parent: every later revision
+// carried the chat's startedAt and was rejected, leaving 待分配/待执行 forever.
+(async()=>{
+  const tick=()=>new Promise(r=>setTimeout(r,5));
+  const hub=setup(true), worker=setup(true), sent=[];
+  hub.channel.peerInfos=()=>[{epoch:7,peerId:'chat1',role:'chat',ready:true,name:'聊天设备1'},{epoch:8,peerId:'worker2',role:'compute',ready:true,name:'算力设备2'}];
+  worker.channel.selfComputeNumber=()=>2;worker.channel.selfLabel=()=> '算力设备2';
+  worker.channel.peerInfos=()=>[{epoch:11,peerId:'hub1',role:'compute',ready:true,name:'算力设备1'}];
+  hub.channel.send=async(message,epoch)=>{if(message.type==='infer.task'&&epoch===8){sent.push(message.task.revision);
+    worker.page.receiveInference(JSON.parse(JSON.stringify(message)),11);}return true;};
+  worker.page.inference={handle(message,epoch){worker.page.showInferTask(message.requestId,epoch,message.messages.at(-1).content,message.label||'')}};
+  const question='查一下明天深圳到北京的高铁票，再查一下北京天气';
+  let n=0;
+  const forward=(sub,label,content)=>{const id='r'+(++n),messages=[{role:'user',content}];
+    hub.page.taskLinks.set(hub.page.constructor.jobKey(7,id),{taskId:'T1',subtaskId:sub,origin:'聊天设备1',input:'[user]\n'+content});
+    const message={type:'infer.request',version:2,requestId:'fw_'+id,messages,label,taskId:'T1',subtaskId:sub,origin:'聊天设备1'};
+    hub.page.showRelayTask(id,7,8,messages,label);hub.page.forwardTaskDisplay(id,7,8,message);worker.page.receiveInference(message,11);
+    return (answer)=>{worker.page.finishInferTask(message.requestId,11,answer,false);hub.page.completeJob(id,7,answer,false);};};
+  const kids=(a,b)=>[{id:'s1',title:'高铁票',device:a[1],phase:a[0],detail:''},{id:'s2',title:'北京天气',device:b[1],phase:b[0],detail:''}];
+  let revision=0;
+  const snap=(phase,a,b,extra={})=>hub.page.receiveInference({type:'infer.task',requestId:'T1',task:{id:'T1',title:question,phase,
+    revision:++revision,startedAt:1000,endedAt:0,answer:'',subtasks:kids(a,b),...extra}},7);
+  forward('plan','任务拆分','## User request\n'+question)('[{"title":"高铁票","task":"查询明天深圳到北京的高铁票"},{"title":"北京天气","task":"查询北京天气"}]');
+  await tick();
+  assert.equal(hub.page.taskViews().length,1,'the hub still shows its provisional parent locally');
+  assert.deepEqual(sent,[],'a provisional parent is never published to workers');
+  snap('running',['queued',''],['queued',''],{});await tick();
+  const child=forward('s1','子任务 1/2','User task:\n查询明天深圳到北京的高铁票');await tick();
+  snap('running',['running','算力设备2'],['running','算力设备1']);await tick();
+  child('Final: G302');await tick();
+  snap('done',['done','算力设备2'],['done','算力设备1'],{endedAt:5000,answer:'汇总'});await tick();
+  const shown=worker.page.taskBoard.views();
+  assert.equal(shown.length,1);
+  assert.equal(shown[0].phase,'done','the worker follows the chat snapshot to its final state: '+sent.join(','));
+  assert.equal(shown[0].subtasks[0].device,'算力设备2');
+  console.log('PASS: worker-run split -> provisional hub parent stays local -> worker follows chat snapshots to done');
+})();
 
 // Native display integration: parent ownership is distinct from actual child worker.
 {

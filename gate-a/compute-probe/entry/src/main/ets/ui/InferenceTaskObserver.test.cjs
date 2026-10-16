@@ -8,6 +8,13 @@ const {InferenceTaskObserver}=load(path.join(__dirname,'InferenceTaskObserver.et
 const summary=presentation.inferenceSummary('System: PRIVATE_SYSTEM\nTools: PRIVATE_TOOLS\nUser task:\n比较两个模型\n\nControl: PRIVATE_CONTROL');
 assert.equal(summary,'比较两个模型');
 assert.equal(presentation.inferenceSummary('PRIVATE ENTIRE PROMPT'),'推理请求');
+assert.equal(presentation.inferenceSummary('帮我解释什么是量子计算','普通聊天'),'帮我解释什么是量子计算');
+assert.equal(presentation.inferenceSummary('用户：旧问题\n助手：旧回答\n用户：帮我解释什么是量子计算\n助手：','普通聊天'),'帮我解释什么是量子计算');
+assert.equal(presentation.inferenceSummary('用户：旧问题\n助手：旧回答\n用户：请总结附件\n附件正文：\n内容\n助手：','普通聊天'),'请总结附件');
+assert.equal(presentation.inferenceSummary('用户：旧问题\r\n助手：旧回答\r\n用户：当前问题\r\n助手：','普通聊天'),'当前问题');
+assert.equal(presentation.inferenceSummary('解释 User task: 这个词','普通聊天'),'解释 User task: 这个词');
+assert.equal(presentation.inferenceSummary('很长的问题'.repeat(30),'普通聊天'),'很长的问题'.repeat(30).substring(0,80)+'…');
+assert.equal(presentation.inferenceSummary('  ','普通聊天'),'推理请求');
 assert.equal(presentation.inferenceSummary('规则…\n用户请求：\n比较两个模型\n\n【子任务1：模型A｜已完成】\nPRIVATE_RESULT','合并结果'),'【合并结果】比较两个模型');
 const observer=new InferenceTaskObserver();
 let counter=0;
@@ -41,5 +48,12 @@ replacement.end(late);assert.equal(replacement.views().length,0,'authoritative s
   m.answer='汇总';m.endedAt=Date.now();obs.end(m);assert.equal(g.subtasks[0].phase,'done');assert.equal(g.subtasks[1].phase,'failed');assert.equal(g.phase,'partial');assert.ok(g.endedAt>0);
   const s=new InferenceTaskObserver();const sp=job('用户请求：\n很久的任务','算力设备1',21);s.begin(sp,'任务拆分','算力设备1');sp.answer=p.answer;s.end(sp);
   const realNow=Date.now;Date.now=()=>realNow()+600001;try{assert.equal(s.views()[0].phase,'unknown');assert.ok(s.views()[0].endedAt>0);}finally{Date.now=realNow;}
+}
+{
+  const obs=new InferenceTaskObserver();const p=job('# Role\nsplit\n\n## Examples\nRequest: x\nOutput: []\n\n## User request\n比较两个模型','算力设备1',30);obs.begin(p,'任务拆分','算力设备1');
+  p.answer=JSON.stringify([{title:'模型A',task:'介绍模型A'},{title:'模型B',task:'介绍模型B'}]);obs.end(p);const g=obs.views()[0];assert.equal(g.title,'比较两个模型');
+  const m=job('# Role\nmerge\n\n## User request\n比较两个模型\n\n## Subtask results\n\n### Subtask 1: 模型A [completed]\nA的结果\n\n### Subtask 2: 模型B [unfinished]\nThis part could not be completed: 超时','算力设备1',30);
+  obs.begin(m,'合并结果','算力设备1');assert.equal(g.phase,'merging');assert.equal(g.subtasks[0].phase,'done');assert.equal(g.subtasks[0].result,'A的结果');assert.equal(g.subtasks[1].phase,'failed');
+  assert.equal(presentation.inferenceSummary('# Role\nmerge\n\n## User request\n比较两个模型\n\n## Subtask results\n\n### Subtask 1: 模型A [completed]\nX','合并结果'),'【合并结果】比较两个模型');
 }
 console.log('PASS: short titles, raw prompts excluded, real legacy split plans, exact child matching, actual executor, returned result sections, no fabricated completion and disconnect');

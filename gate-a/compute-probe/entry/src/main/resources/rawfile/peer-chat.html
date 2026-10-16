@@ -108,7 +108,11 @@
     .bar { gap:4px; white-space:nowrap; }
     .bar i { width:42px; flex-shrink:0; }
     .device-panel { min-height:0; }
-    .devices-label { margin-bottom:10px; }
+    .devices-label { margin-bottom:10px; display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; -webkit-user-select:none; }
+    .devices-label::before { content:"▾"; display:inline-block; width:12px; color:var(--muted); transition:transform .2s; }
+    .devices-label.collapsed::before { transform:rotate(-90deg); }
+    .devices-label .dev-sum { margin-left:auto; font-weight:500; font-size:12px; color:var(--muted); }
+    .device-panel.collapsed #devices { display:none; }
     .model,.heat { overflow-wrap:anywhere; }
     .jobs { font-size:13px; padding:2px 5px; }
     .task-panel { position:relative; display:flex; flex-direction:column; min-height:0; flex:1; background:#fff; border-radius:18px; border:1px solid var(--line); overflow:hidden; }
@@ -214,8 +218,8 @@
       <button id="connect" class="connect" type="button" disabled>启用近场</button>
     </header>
     <div class="stats" id="stats"></div>
-    <aside class="device-panel" aria-label="附近设备">
-      <div class="section devices-label">附近设备<span id="deviceCount"></span></div>
+    <aside class="device-panel" id="devicePanel" aria-label="附近设备">
+      <div class="section devices-label" id="devicesToggle" role="button" tabindex="0" aria-expanded="true">附近设备<span id="deviceCount"></span><span class="dev-sum" id="deviceSummary"></span></div>
       <div class="list" id="devices"></div>
     </aside>
     <section class="task-panel" aria-label="本机推理任务">
@@ -291,9 +295,9 @@
     let detailFollow=true;
     function summaryText(text){
       let value=String(text||'').replace(/^（附图）/,'').replace(/^【(?:子任务\s+\d+\/\d+|任务拆分|合并结果)】/,'');
-      const marker=value.match(/(?:^|\n)(?:User task:|用户请求：|原始问题：)\s*\n/);
+      const marker=value.match(/(?:^|\n)(?:User task:|## User request|Original question:|用户请求：|原始问题：)\s*\n/);
       if(marker)value=value.slice(marker.index+marker[0].length).split('\n')[0];
-      else if(/\n|^(?:You are|Return |System:|Developer:|把用户请求拆成|下面是同一个用户请求)/i.test(value))value='推理请求';
+      else if(/\n|^(?:You are|# Role|Return |System:|Developer:|把用户请求拆成|下面是同一个用户请求)/i.test(value))value='推理请求';
       value=value.replace(/\s+/g,' ').trim()||'推理请求';
       return value.length>80?value.slice(0,80)+'…':value;
     }
@@ -401,12 +405,12 @@
           (calls.length?'<button class="task-action" type="button" data-child="'+esc(child.id)+'" data-group="'+esc(group.key)+'">查看推理 ›</button>':
           (typeof child.result==='string'?'<button class="task-action" type="button" data-result="'+esc(child.id)+'" data-group="'+esc(group.key)+'">查看结果 ›</button>':'<span></span>'))+'</div>';
       }).join('');
-      const settled=group.subtasks.filter(child=>child.phase!=='queued'&&child.phase!=='running').length;
+      const settled=group.subtasks.filter(child=>child.phase==='done'||child.phase==='partial').length;
       const progress='<span class="group-progress" aria-label="子任务进度">'+group.subtasks.map(child=>
         '<i class="seg '+phaseView(child.phase)[1]+(child.phase==='done'?' ok':'')+'"></i>').join('')+'</span>';
       return '<article class="task-group" data-row-key="group:'+esc(group.key)+'"><div class="task-row"><div class="task-info"><h3 class="task-question"><span class="parent-label">主任务</span>'+esc(summaryText(group.title))+
         '</h3><p class="task-origin">'+esc(group.origin)+' · '+group.subtasks.length+' 个子任务'+(local?'':' · 本机参与 '+assigned.length+' 个')+'</p><div class="task-metrics">耗时 '+clock(elapsed)+
-        ' · 子任务 '+settled+'/'+group.subtasks.length+progress+'</div></div><span class="task-worker">'+esc(group.executor)+'</span><span class="task-state '+state[1]+'">'+state[0]+
+        ' · 子任务 '+settled+'/'+group.subtasks.length+progress+'</div></div><span class="task-worker">'+esc(local?group.executor:'汇总：'+group.executor)+'</span><span class="task-state '+state[1]+'">'+state[0]+
         '</span><div class="group-actions"><button class="task-action" type="button" data-collapse="'+esc(group.key)+'" aria-expanded="'+!collapsed+'">'+
         (collapsed?'展开分工 ▾':'收起分工 ▴')+'</button>'+(group.answer?'<button class="task-action" type="button" data-summary="'+esc(group.key)+'">查看结果 ›</button>':'')+
         '</div></div>'+(collapsed?'':'<div class="task-children" role="group" aria-label="子任务分工">'+children+'</div>')+'</article>';
@@ -492,10 +496,37 @@
       statsView.innerHTML='<div class="stat"><span>聊天机</span><b>'+chats+'</b></div>'+
         '<div class="stat"><span>本机推理中</span><b>'+running+'</b></div>';
     }
+    let devicesCollapsed=false;
+    try{devicesCollapsed=localStorage.getItem('devicesCollapsed')==='1';}catch(error){}
+    function applyDevicesCollapsed(){
+      const toggle=document.getElementById('devicesToggle');
+      const panel=document.getElementById('devicePanel');
+      if(toggle&&toggle.classList&&toggle.classList.toggle){toggle.classList.toggle('collapsed',devicesCollapsed);toggle.setAttribute('aria-expanded',devicesCollapsed?'false':'true');}
+      if(panel&&panel.classList&&panel.classList.toggle)panel.classList.toggle('collapsed',devicesCollapsed);
+    }
+    function toggleDevices(){
+      devicesCollapsed=!devicesCollapsed;
+      try{localStorage.setItem('devicesCollapsed',devicesCollapsed?'1':'0');}catch(error){}
+      applyDevicesCollapsed();
+      renderDevices();
+    }
+    (function(){
+      const toggle=document.getElementById('devicesToggle');
+      if(!toggle||!toggle.addEventListener)return;
+      toggle.addEventListener('click',toggleDevices);
+      toggle.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleDevices();}});
+      applyDevicesCollapsed();
+    })();
     function renderDevices(){
       if(!devicesView)return;
       const count=document.getElementById('deviceCount');
       if(count)count.textContent=devices.length?' · '+devices.length+' 台':'';
+      const summary=document.getElementById('deviceSummary');
+      if(summary){
+        const online=devices.filter(device=>device.ready).length;
+        const busy=devices.filter(device=>(device.role==='self'||device.role==='compute')&&(typeof device.jobs==='number'?device.jobs:(device.modelRequests||0))>0).length;
+        summary.textContent=devicesCollapsed&&devices.length?online+' 台在线'+(busy>0?' · '+busy+' 台推理中':''):'';
+      }
       if(!devices.length){devicesView.innerHTML='<div class="empty">等待聊天手机连入</div>';return;}
       renderMarkup(devicesView,devices.map(device=>{
         const compute=device.role==='self'||device.role==='compute';

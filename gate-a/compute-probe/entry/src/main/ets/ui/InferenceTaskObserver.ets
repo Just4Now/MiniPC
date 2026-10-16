@@ -34,11 +34,23 @@ export class InferenceTaskObserver {
   private calls: Map<string, ObservedCall> = new Map();
   private groups: Map<string, TaskGroupView> = new Map();
   private authoritative: string[] = [];
+  private declared: string[] = [];
+
+  /**
+   * A run whose parent id came from the chat request belongs to a client that sends its own
+   * snapshots. Its observed group only bridges the gap locally: it carries this device's start
+   * time and parsed title, so publishing it would lock other devices onto a parent the chat's
+   * snapshot can never update.
+   */
+  provisional(key: string): boolean {
+    return this.declared.includes(key);
+  }
 
   /** Once structured state is available, the compatibility view must never resurface. */
   suppress(key: string): void {
     if (!this.authoritative.includes(key)) this.authoritative.push(key);
     if (this.authoritative.length > 128) this.authoritative.shift();
+    this.declared = this.declared.filter((item: string): boolean => item !== key);
     this.groups.delete(key);
     for (const entry of this.runs) if (entry[1].key === key) this.runs.delete(entry[0]);
     for (const entry of this.calls) if (entry[1].run.key === key) this.calls.delete(entry[0]);
@@ -55,7 +67,12 @@ export class InferenceTaskObserver {
         previous.group.phase = 'unknown'; previous.group.endedAt = Date.now();
       }
       const id = job.taskId || 'observed_' + Date.now().toString(36) + (++this.serial).toString(36);
-      const run: ObservedRun = { id: id, key: String(job.epoch) + ':' + id, epoch: job.epoch,
+      const key = String(job.epoch) + ':' + id;
+      if (job.taskId !== undefined && !this.declared.includes(key)) {
+        this.declared.push(key);
+        if (this.declared.length > 128) this.declared.shift();
+      }
+      const run: ObservedRun = { id: id, key: key, epoch: job.epoch,
         title: task, origin: job.origin, executor: executor, startedAt: job.startedAt, items: [],
         linked: [], returned: [], updatedAt: Date.now() };
       this.runs.set(job.epoch, run);
@@ -177,10 +194,15 @@ export class InferenceTaskObserver {
 
   private readReturnedResults(run: ObservedRun, input: string): boolean {
     if (run.group === undefined) return false;
-    const pattern = /【子任务(\d+)：([^｜\n]+)｜(已完成|部分完成|未完成)】\n/g;
-    const matches: RegExpExecArray[] = [];
+    // Current prompts use English markdown sections; older chat builds sent bracketed Chinese headings.
+    let pattern = /^### Subtask (\d+): (.+) \[(completed|partial|unfinished)\]\n/gm;
+    let matches: RegExpExecArray[] = [];
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(input)) !== null) matches.push(match);
+    if (matches.length === 0) {
+      pattern = /【子任务(\d+)：([^｜\n]+)｜(已完成|部分完成|未完成)】\n/g;
+      while ((match = pattern.exec(input)) !== null) matches.push(match);
+    }
     if (matches.length !== run.items.length) return false;
     for (let index = 0; index < matches.length; index++) {
       const title = run.items[index].title || '子任务' + String(index + 1);
@@ -190,7 +212,8 @@ export class InferenceTaskObserver {
       const start = matches[index].index + matches[index][0].length;
       const result = input.substring(start, index + 1 < matches.length ? matches[index + 1].index : input.length).trim();
       const child = run.group.subtasks[index];
-      child.phase = matches[index][3] === '已完成' ? 'done' : (matches[index][3] === '部分完成' ? 'partial' : 'failed');
+      const label = matches[index][3];
+      child.phase = label === 'completed' || label === '已完成' ? 'done' : (label === 'partial' || label === '部分完成' ? 'partial' : 'failed');
       child.result = result.substring(0, 2048); child.resultTruncated = result.length > 2048;
     }
     return true;

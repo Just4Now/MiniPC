@@ -49,7 +49,7 @@ async function advance(ms) {
  */
 const prefs = new Map();
 
-function build(server, tag) {
+function build(server, tag, channelDir) {
   const logs = [];
   const bus = new Map();
   const connections = [];
@@ -224,7 +224,7 @@ function build(server, tag) {
     COMPUTE_ADV_TYPE: 1, COMPUTE_ADV_KEY_BYTES: 4 };
   modules.roster = load('ClusterRoster', __dirname + '/../cluster');
   modules.protocol = load('ChatProtocol', __dirname + '/../protocol');
-  const channel = new (load('LinkEnhanceChannel').LinkEnhanceChannel)();
+  const channel = new (load('LinkEnhanceChannel', channelDir).LinkEnhanceChannel)();
   channel.initialize({ tag: tag || (server ? 'server' : 'client'), applicationInfo: { accessTokenId: 1 } });
   const decode = text => {
     const assembler = new modules.protocol.MessageAssembler();
@@ -256,6 +256,24 @@ function scan(t) {
 }
 
 (async () => {
+  for (const [name,dir] of [['compute',undefined],['chat',require('node:path').resolve(__dirname,'../../../../../../../loop-chat/entry/src/main/ets/nearby')]]) {
+    const t=build(name==='compute','background-'+name,dir),activity=[],frames=[];
+    t.channel.setActivityListener(active=>activity.push(active));
+    let closed=0;
+    const connect=id=>{
+      const link={on(){},sendData(data){frames.push(data);},disconnect(){closed++;},close(){closed++;},getPeerDeviceId(){return id;}};
+      const peer=t.channel.attach(link,id,true);t.channel.ready(peer);return peer;
+    };
+    const first=connect('one'),second=connect('two');
+    const operation=t.channel.operation();t.channel.suspend();
+    assert.equal(t.channel.isForeground(),false);assert.equal(t.channel.connectedCount(),2);
+    assert.equal(t.channel.operation(),operation);assert.equal(closed,0);assert.equal(activity.at(-1),true);
+    assert.equal(await t.channel.send({type:'infer.delta',version:2,requestId:'r',seq:1,text:'后台结果'},first.epoch),true);
+    assert(frames.length>0,'background results still use the live connection');
+    t.channel.drop(first,'one disconnected');assert.equal(activity.at(-1),true,'one remaining peer retains the lease');
+    t.channel.resume();assert.equal(t.channel.connectedCount(),1);assert.equal(t.channel.operation(),operation);
+    t.channel.disconnect();assert.equal(activity.at(-1),false);assert.equal(t.channel.connectedCount(),0);assert(closed>0);
+  }
   {
     const t = build(true, 'withdraw-stale-hub');
     await t.channel.prepare();

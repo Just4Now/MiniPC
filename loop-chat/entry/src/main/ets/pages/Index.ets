@@ -39,6 +39,8 @@ import { nearbyChannel } from '../nearby/LinkEnhanceChannel';
 import { inferenceClient, INFERENCE_STOPPED } from '../model/InferenceClient';
 import { TaskChildSnapshot, TaskSnapshot } from '../protocol/ChatProtocol';
 import { RemoteComputeModel } from '../model/RemoteComputeModel';
+import { loadAgentEnabled, saveAgentEnabled } from '../model/ChatModeStore';
+import { buildPlainChatPrompt } from '../model/PlainChat';
 import { pickAttachment, readTextExcerpt, SavedAttachment } from '../media/ChatAttach';
 import {
   CollaborationController,
@@ -220,6 +222,7 @@ struct Index {
   @State messages: ChatBubble[] = [];
   @State message: string = '';
   @State sending: boolean = false;
+  @State agentEnabled: boolean = false;
   @State modelStatus: string = '远程算力';
   @State titleText: string = '聊天';
   @State statusText: string = '正在寻找算力设备…';
@@ -293,8 +296,8 @@ struct Index {
     this.pageActive = true;
     this.stopRequested = false;
     const context = this.getAbilityContext();
+    this.agentEnabled = loadAgentEnabled(context);
     this.restoreConversation();
-    this.toolRegistryPromise = createConfiguredLoopToolRegistry(context);
     ensureBundledWorkspaceFiles(context).catch((_error: Error): void => {});
     nearbyChannel.initialize(context);
     inferenceClient.bind();
@@ -398,6 +401,33 @@ struct Index {
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
+
+      Row() {
+        Column() {
+          Text(this.agentEnabled ? 'Agent 模式' : '普通聊天')
+            .fontSize(14)
+            .fontWeight(FontWeight.Medium)
+            .fontColor('#16332C')
+          Text(this.agentEnabled ? '自动规划任务并调用工具' : '算力直接回答，不调用工具')
+            .fontSize(12)
+            .fontColor('#6B7F79')
+            .margin({ top: 2 })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.agentEnabled })
+          .selectedColor('#0F8A74')
+          .accessibilityText('开启或关闭 Agent')
+          .enabled(!this.sending)
+          .onChange((enabled: boolean): void => {
+            this.changeAgentMode(enabled);
+          })
+      }
+      .width('100%')
+      .padding({ left: 12, right: 8, top: 10, bottom: 10 })
+      .margin({ top: 10, bottom: 4 })
+      .backgroundColor('#F7FBFA')
+      .borderRadius(16)
 
       Scroll(this.scroller) {
         Column() {
@@ -1117,8 +1147,25 @@ struct Index {
     return this.pageActive && generation === this.remoteRunGeneration && !this.stopRequested;
   }
 
+  private changeAgentMode(enabled: boolean): void {
+    if (this.sending || enabled === this.agentEnabled) { return; }
+    this.agentEnabled = enabled;
+    if (!enabled) {
+      const tools = this.toolRegistryPromise;
+      this.toolRegistryPromise = null;
+      this.toolRegistryIncludesSkills = false;
+      tools?.then(async (registry: ToolRegistry): Promise<void> => registry.close()).catch((_error: Error): void => {});
+    }
+    saveAgentEnabled(this.getAbilityContext(), enabled).catch((_error: Error): void => {
+      if (this.pageActive) {
+        this.appendLine('Error', '模式已切换，但未能保存设置，重启后请重新选择。', BubbleKind.ERROR);
+      }
+    });
+  }
+
   private async runRemoteAgent(task: string, display: string, imagePath: string): Promise<void> {
     if (!this.pageActive || this.sending) { return; }
+    const useAgent = this.agentEnabled;
     const generation = ++this.remoteRunGeneration;
     this.stopRequested = false;
     this.message = '';
@@ -1146,6 +1193,23 @@ struct Index {
         return;
       }
       this.appendUserMessage(display, imagePath);
+      if (!useAgent) {
+        const prompt = buildPlainChatPrompt(task, inferenceClient.promptBudgetBytes());
+        const answer = await inferenceClient.complete(prompt, {
+          label: '普通聊天',
+          onStart: (): void => {
+            if (this.isCurrentRemoteRun(generation)) { this.beginLiveReply(); }
+          },
+          onDelta: (text: string): void => {
+            if (this.isCurrentRemoteRun(generation)) { this.commitLiveAnswer(text); }
+          }
+        });
+        if (!this.isCurrentRemoteRun(generation)) { return; }
+        if (answer.trim().length === 0) { throw new Error('算力未返回回答，请重试'); }
+        finalAnswer = answer;
+        this.commitLiveAnswer(answer);
+        return;
+      }
       const context = this.getAbilityContext();
       const skillSnapshot = this.skillSnapshot ?? await createSkillSnapshot(context);
       if (!this.isCurrentRemoteRun(generation)) { return; }

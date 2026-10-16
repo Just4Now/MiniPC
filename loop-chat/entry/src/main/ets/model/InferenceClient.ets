@@ -627,7 +627,11 @@ class InferenceClient {
     }
     this.calls.delete(state.requestId);
     clearTimeout(state.timer);
-    hilog.info(0, 'NearbyChat', 'infer complete bytes=%{public}d', utf8Bytes(text).length);
+    const sent = state.messages !== undefined ?
+      'system=' + utf8Bytes(state.messages[0].content).length.toString() + ' user=' + utf8Bytes(state.messages[1].content).length.toString() :
+      'prompt=' + utf8Bytes(state.prompt).length.toString();
+    hilog.info(0, 'NearbyChat', 'infer complete bytes=%{public}d %{public}s elapsedMs=%{public}d',
+      utf8Bytes(text).length, sent, Date.now() - state.firstStarted);
     state.resolve?.(text);
   }
 
