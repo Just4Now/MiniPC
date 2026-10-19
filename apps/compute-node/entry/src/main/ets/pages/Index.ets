@@ -17,6 +17,7 @@ import { classifyFromMessages } from '../cluster/TaskRules';
 import { LocalLlmTransport } from '../llm/LlmTransport';
 import { VlLlmTransport } from '../llm/VlLlmTransport';
 import { QwenVlManager } from '../llm/QwenVlManager';
+import { isVlLayout, modelSelection, readyModelDirs, saveModelSelection } from '../llm/ModelRegistry';
 import { pickJpegDataUrl, jpegBase64Payload } from '../media/ImageAttach';
 import {
   DEVICE_INFO_POLL_MS, applyDeviceInfo, buildSelfEntry, deployedModelName,
@@ -24,7 +25,7 @@ import {
 } from '../cluster/DeviceInfo';
 import { chatLabel, computeLabel, hidePhoneName, needsLabel, publicLabel, workerTail } from '../cluster/DeviceLabels';
 import { ChatBridge } from '../ui/ChatBridge';
-import { ActiveJob, DeviceView, JobView, PageEvent } from '../ui/DashboardTypes';
+import { ActiveJob, DeviceView, JobView, ModelChoiceView, ModelSettingsView, PageEvent } from '../ui/DashboardTypes';
 import { TaskBoard, TaskGroupView } from '../ui/TaskBoard';
 import { TaskDisplayRelay } from '../ui/TaskDisplayRelay';
 import { inferenceSummary } from '../ui/InferencePresentation';
@@ -82,7 +83,10 @@ struct Index {
         this.autoConnect = true;
         this.ensureCollaborationReady(true);
       }
-    }, () => { this.pickImage(); }, () => { this.clearFinishedJobs(); }, () => { this.pendingImage = ''; });  private channel = nearbyChannel;
+    }, () => { this.pickImage(); }, () => { this.clearFinishedJobs(); }, () => { this.pendingImage = ''; },
+    (model: string): string => this.selectModel(model),
+    (): string => IS_SERVER && this.filesDir.length > 0 ? JSON.stringify(this.modelSettings()) : 'null');
+  private channel = nearbyChannel;
   private connecting: boolean = false;
   private preparation: Promise<void> | null = null;
   private serviceReady: boolean = false;
@@ -401,6 +405,40 @@ struct Index {
     this.publishWorkerTasks(this.taskViews());
   }
 
+  private modelSettingsLocked(): boolean {
+    return this.jobs.some((job: ActiveJob): boolean => job.workerEpoch === 0) ||
+      (this.inference?.isActive() ?? false) || (this.model?.hasPendingNativeJobs() ?? false) ||
+      QwenVlManager.getInstance().isBusy();
+  }
+
+  private modelSettings(): ModelSettingsView {
+    const selection = modelSelection(this.filesDir);
+    const options = readyModelDirs(this.filesDir).map((dir: string): ModelChoiceView => {
+      return { name: dir, vision: isVlLayout(this.filesDir + '/models/' + dir) };
+    });
+    return { selected: selection.model, options: options,
+      locked: this.modelSettingsLocked() };
+  }
+
+  private selectModel(model: string): string {
+    if (!IS_SERVER || this.filesDir.length === 0) return '模型服务尚未初始化。';
+    if (this.modelSettingsLocked()) return '本机正在推理或释放模型，请结束后再切换。';
+    try {
+      this.model?.resetIdleSessions();
+      QwenVlManager.getInstance().unloadIfIdle();
+    } catch (_) { return '旧模型尚未释放，请稍后再试。'; }
+    const error = saveModelSelection(this.filesDir, { model: model });
+    if (error.length > 0) return error;
+    QwenVlManager.getInstance().init(this.filesDir);
+    // Publish capabilities immediately so peers stop routing disabled input types here.
+    for (const peer of this.channel.peerInfos()) {
+      if (peer.ready) this.replyDeviceInfo('models-' + String(Date.now()), peer.epoch);
+    }
+    this.rosterDeliveries.clear();
+    this.emitDashboard();
+    return '';
+  }
+
   private emitDashboard(): void {
     this.channel.setActiveJobs(this.jobs.length);
     collaborationScreen.setWanted(IS_SERVER && this.pageReady && (this.channel.isListening() || this.jobs.length > 0));
@@ -511,7 +549,8 @@ struct Index {
       selfLabel: this.selfComputeLabel(),
       devices: devices,
       jobs: views,
-      groups: groups
+      groups: groups,
+      modelSettings: this.modelSettings()
     });
   }
 
@@ -617,6 +656,7 @@ struct Index {
 
   private selfMeetsNeeds(needs: string[]): boolean {
     const caps = this.selfEntry().capabilities || [];
+    if (needs.length === 0) return caps.indexOf('text') >= 0;
     for (const need of needs) {
       if (caps.indexOf(need) < 0) return false;
     }
@@ -637,7 +677,7 @@ struct Index {
    * 被拒绝的理由（否则 scheduleRequest 会回"请连接算力设备1"）。
    */
   private shouldScheduleSelf(needs: string[], taskTier: number): boolean {
-    if (needs.length > 0 && !this.selfMeetsNeeds(needs)) return true;
+    if (!this.selfMeetsNeeds(needs)) return true;
     if (this.channel.selfComputeNumber() !== 1) return false;
     if (this.routeMode !== 'auto' && this.routeMode.length > 0) return false;
     if (taskTier <= this.selfTierOf()) return false;
@@ -1056,7 +1096,7 @@ struct Index {
       node.epoch = peer.epoch;
       node.name = peer.name;
       node.model = model;
-      node.capabilities = stats?.capabilities || [];
+      node.capabilities = stats?.capabilities || ['text'];
       node.requests = this.router.workerLoad(peer.epoch, stats?.modelRequests === undefined ? 0 : stats.modelRequests);
       node.memAvail = stats?.memAvail === undefined ? -1 : stats.memAvail;
       if (stats?.modelTier !== undefined) node.modelTier = stats.modelTier;
@@ -1067,6 +1107,7 @@ struct Index {
 
   private scheduleRequest(id: string, messages: ChatMessage[], originEpoch: number, sched: boolean,
     forwardedOrigin: string = '', needs: string[] = [], image: string = ''): string {
+    if (image.length > 0 && needs.length === 0) needs = ['vision'];
     if (sched) return this.startLocal(id, messages, true, originEpoch, image, forwardedOrigin || '聊天设备');
     if (this.channel.selfComputeNumber() !== 1) return '请连接算力设备1，由它统一调度。';
     const nodes = this.scheduleNodes();
@@ -1083,7 +1124,7 @@ struct Index {
       if (this.routeMode === 'pin1') return '实验路由找不到算力设备1。';
       if (this.routeMode === 'pin2') return '实验路由找不到算力设备2。';
       // 有带模型的设备却选不出，只能是能力不满足：绝不降级发给不具备能力的设备。
-      if (needs.length > 0 && nodes.length > 0) return '集群中没有支持' + needsLabel(needs) + '的设备。';
+      if (nodes.length > 0) return '集群中没有支持' + (needs.length > 0 ? needsLabel(needs) : '文字推理') + '的设备。';
       return '集群中无已部署模型的可用设备。';
     }
     if (node.isSelf) return this.startLocal(id, messages, true, originEpoch, image, '', this.routeMode, profile.tier);
@@ -1413,7 +1454,8 @@ struct Index {
       } else if (message.type === 'deviceInfoSync') {
         this.handleClusterSync(message, epoch);
       } else if (message.type === 'prepare' && message.requestId) {
-        const error = this.model?.readinessError() ?? '模型服务尚未初始化。';
+        const textError = this.model?.readinessError() ?? '模型服务尚未初始化。';
+        const error = textError && this.vlTransport?.readinessError() === '' ? '' : textError;
         const reply: WireMessage = { type: 'prepared', requestId: message.requestId };
         if (error) reply.error = error;
         this.channel.send(reply, epoch);
@@ -1528,7 +1570,7 @@ struct Index {
       Web({ src: $rawfile('peer-chat.html'), controller: this.controller })
         .javaScriptAccess(true)
         .domStorageAccess(false)
-        .javaScriptProxy({ object: this.bridge, name: 'chatBridge', methodList: ['send', 'stop', 'connect', 'prepare', 'pickImage', 'clear', 'clearImage'], controller: this.controller })
+        .javaScriptProxy({ object: this.bridge, name: 'chatBridge', methodList: ['send', 'stop', 'connect', 'prepare', 'pickImage', 'clear', 'clearImage', 'selectModel', 'models'], controller: this.controller })
         .onPageEnd(() => {
           this.pageReady = true;
           this.channel.subscribe(

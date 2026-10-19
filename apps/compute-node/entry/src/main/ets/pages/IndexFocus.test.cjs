@@ -49,6 +49,12 @@ function setup(isServer) {
     }
     if (name === '../nearby/NearbyConfig') return { IS_SERVER: !!isServer };
     if (name === '../llm/LocalChat') return { LocalChat: class {} };
+    if (name === '../llm/ModelRegistry') return {
+      modelSelection: () => behavior.modelSelection || {model:''},
+      readyModelDirs: () => ['7B','VL'],
+      isVlLayout: path => path.endsWith('/VL'),
+      saveModelSelection: (_dir, selection) => { behavior.modelSelection = selection; return ''; }
+    };
     if (name === '../llm/LlmTransport') return { LocalLlmTransport: class {
       constructor(chat) { this.chat = chat; }
       start(messages, cb, id) { return this.chat.start(messages, cb, id); }
@@ -64,7 +70,7 @@ function setup(isServer) {
       cancel() {} readinessError() { return ''; } isBusy() { return false; }
     } };
     if (name === '../llm/QwenVlManager') return { QwenVlManager: { getInstance: () => ({
-      init() {}, isModelEnabled: () => false, getDeployedModelName: () => '', readinessError: () => '',
+      init() { behavior.modelInitializations = (behavior.modelInitializations || 0) + 1; }, isModelEnabled: () => false, getDeployedModelName: () => '', readinessError: () => '',
       isBusy: () => false, unloadIfIdle() {}
     }) } };
     if (name === '../cluster/ComputeRouter') {
@@ -272,7 +278,7 @@ function setup(isServer) {
       return '';
     },
     isBusy() { return callbacks.size > 0; },
-    activeCount() { return callbacks.size; },
+    hasPendingNativeJobs() { return false; }, activeCount() { return callbacks.size; },
     readinessError() { return ''; },
     cancel(id) {
       const cb = callbacks.get(id);
@@ -309,7 +315,7 @@ function setup(isServer) {
     start() { return ''; },
     readinessError() { return ''; },
     cancel() {},
-    activeCount() { return 0; }
+    hasPendingNativeJobs() { return false; }, activeCount() { return 0; }
   };
   s.page.pageReady = true;
   s.channel.peerInfos = () => [{ epoch: 7, peerId: 'aa:bb', ready: true, role: 'compute', name: '算力设备2' }];
@@ -363,7 +369,7 @@ function setup(isServer) {
 {
   const follower = setup(true);
   follower.channel.selfComputeNumber = () => 2;
-  follower.page.model = { start() { throw new Error('a follower must not coordinate'); }, activeCount() { return 0; } };
+  follower.page.model = { start() { throw new Error('a follower must not coordinate'); }, hasPendingNativeJobs() { return false; }, activeCount() { return 0; } };
   follower.page.receive({ type: 'request', requestId: 'not-hub',
     messages: [{ role: 'user', content: 'A' }] }, 1);
   assert.equal(follower.sent.at(-1).type, 'error');
@@ -374,7 +380,7 @@ function setup(isServer) {
 {
   const worker = setup(true);
   worker.page.pageReady = true;
-  worker.page.model = { start() { return ''; }, readinessError() { return ''; }, cancel() {}, activeCount() { return 1; } };
+  worker.page.model = { start() { return ''; }, readinessError() { return ''; }, cancel() {}, hasPendingNativeJobs() { return false; }, activeCount() { return 1; } };
   worker.channel.peerInfos = () => [{ epoch: 7, peerId: 'coordinator', ready: true, role: 'compute',
     name: '算力设备2', deviceUid: 'compute-2' }];
   worker.page.receive({ type: 'request', requestId: 'forwarded', messages: [{ role: 'user', content: 'A' }],
@@ -584,7 +590,7 @@ function setup(isServer) {
   worker.channel.peerInfos=()=>[{epoch:11,peerId:'hub1',role:'compute',ready:true,name:'算力设备1'}];
   hub.channel.send=async(message,epoch)=>{if(message.type==='infer.task'&&epoch===8){sent.push(message.task.revision);
     worker.page.receiveInference(JSON.parse(JSON.stringify(message)),11);}return true;};
-  worker.page.inference={handle(message,epoch){worker.page.showInferTask(message.requestId,epoch,message.messages.at(-1).content,message.label||'')}};
+  worker.page.inference={isActive(){return false;},handle(message,epoch){worker.page.showInferTask(message.requestId,epoch,message.messages.at(-1).content,message.label||'')}};
   const question='查一下明天深圳到北京的高铁票，再查一下北京天气';
   let n=0;
   const forward=(sub,label,content)=>{const id='r'+(++n),messages=[{role:'user',content}];
@@ -624,7 +630,7 @@ function setup(isServer) {
   assert.equal(board.groups[0].executor,'算力设备1');assert.equal(board.groups[0].origin,'聊天设备2');
   s.page.receiveInference({type:'infer.task',requestId:task.id,task:{...task,revision:2,title:'不可信的算力端主任务'}},8);
   assert.equal(s.page.taskBoard.views()[0].title,'原始任务','compute peer cannot impersonate chat owner');
-  s.page.inference={handle(message,epoch){s.page.showInferTask(message.requestId,epoch,message.prompt,message.label||'')}};
+  s.page.inference={isActive(){return false;},handle(message,epoch){s.page.showInferTask(message.requestId,epoch,message.prompt,message.label||'')}};
   s.page.receiveInference({type:'infer.request',requestId:'child-call',prompt:'子任务输入',taskId:task.id,subtaskId:'s1'},7);
   board=s.events.filter(e=>e.kind==='dashboard').at(-1);
   assert.equal(board.jobs[0].groupKey,'7:display_parent');assert.equal(board.jobs[0].subtaskId,'s1');assert.equal(board.jobs[0].origin,'聊天设备2');
@@ -632,17 +638,47 @@ function setup(isServer) {
   s.page.taskBoard.disconnect(7);s.page.clearFinishedJobs();assert.equal(s.page.taskBoard.views().length,0);
   const worker=setup(true);worker.channel.selfComputeNumber=()=>2;worker.channel.selfLabel=()=> '算力设备2';
   worker.channel.peerInfos=()=>[{epoch:8,peerId:'hub',role:'compute',ready:true,name:'算力设备1'}];
-  worker.page.inference={handle(message,epoch){worker.page.showInferTask(message.requestId,epoch,message.prompt,message.label||'')}};
+  worker.page.inference={isActive(){return false;},handle(message,epoch){worker.page.showInferTask(message.requestId,epoch,message.prompt,message.label||'')}};
   worker.page.receiveInference({type:'infer.request',requestId:'forwarded',prompt:'远端输入',taskId:task.id,subtaskId:'s2',origin:'聊天设备2'},8);
   assert.equal(worker.page.jobs[0].origin,'聊天设备2');assert.equal(worker.page.jobs[0].source,'算力设备2');
   console.log('PASS: native group ownership, chat role checks, request correlation, history cleanup and forwarded origin');
+}
+
+// Model changes must not race active native requests or cleanup.
+{
+  const s = setup(true);
+  let pending = true, resets = 0;
+  s.page.filesDir = '/files';
+  s.page.model = { hasPendingNativeJobs() { return pending; }, activeCount() { return 0; },
+    resetIdleSessions() { resets++; } };
+  assert(s.page.selectModel('VL').includes('结束后再切换'));
+  assert.equal(s.behavior.modelSelection, undefined, 'native cleanup blocks changing persisted selection');
+  pending = false;
+  s.page.inference = { isActive() { return true; } };
+  assert(s.page.selectModel('VL').includes('结束后再切换'));
+  s.page.inference = null;
+  s.channel.peerInfos = () => [{epoch:7,peerId:'chat',name:'聊天设备1',ready:true,role:'chat'},
+    {epoch:8,peerId:'compute',name:'算力设备2',ready:true,role:'compute'}];
+  assert.equal(s.page.selectModel('VL'), '');
+  assert.equal(s.behavior.modelSelection.model, 'VL');
+  assert.equal(resets, 1, 'idle cached text sessions are released before switching');
+  assert.equal(s.behavior.modelInitializations, 1, 'the VL manager rescans the active selection');
+  assert.equal(s.sent.filter(message => message.type === 'deviceInfo').length, 2,
+    'both chat and compute peers receive the updated model advertisement immediately');
+  assert.equal(s.events.at(-1).modelSettings.selected, 'VL');
+  s.page.model.readinessError = () => '没有启用文字模型';
+  s.page.vlTransport = { readinessError() { return ''; } };
+  s.page.receive({type:'prepare',requestId:'vl-prepare'}, 7);
+  assert.equal(s.sent.find(message => message.requestId === 'vl-prepare' && message.type === 'prepared').error,
+    undefined, 'a selected image-only model can still complete connection preparation');
+  console.log('PASS: model switching waits for native cleanup and active requests, then refreshes engine and peer telemetry');
 }
 
 // Replay a purpose-labelled split using an unchanged chat client (no infer.task messages).
 {
   const s=setup(true);
   s.channel.peerInfos=()=>[{epoch:7,peerId:'chat2',role:'chat',ready:true,name:'聊天设备2'},{epoch:8,peerId:'compute2',role:'compute',ready:true,name:'算力设备2'}];
-  s.page.inference={handle(message,epoch){s.page.showInferTask(message.requestId,epoch,message.prompt||message.messages.at(-1).content,message.label||'')}};
+  s.page.inference={isActive(){return false;},handle(message,epoch){s.page.showInferTask(message.requestId,epoch,message.prompt||message.messages.at(-1).content,message.label||'')}};
   const request=(id,prompt,label)=>s.page.receiveInference({type:'infer.request',requestId:id,prompt,label},7);
   request('plan','拆分提示词\n用户请求：\n比较两个模型','任务拆分');
   assert.equal(s.events.filter(e=>e.kind==='dashboard').at(-1).groups.length,0);
@@ -683,8 +719,8 @@ function setup(isServer) {
     {epoch:12,peerId:'worker3',role:'compute',ready:true,name:'算力设备3'}];
   hub.channel.send=async(message,epoch)=>{forwarded.push(JSON.parse(JSON.stringify(message)));
     if(epoch===8&&message.type==='infer.task')worker.page.receiveInference(JSON.parse(JSON.stringify(message)),11);return true;};
-  worker.page.inference={handle(message,epoch){worker.page.showInferTask(message.requestId,epoch,message.prompt,message.label||'')}};
-  hub.page.inference={handle(message,epoch){hub.page.showInferTask(message.requestId,epoch,message.prompt,message.label||'')}};
+  worker.page.inference={isActive(){return false;},handle(message,epoch){worker.page.showInferTask(message.requestId,epoch,message.prompt,message.label||'')}};
+  hub.page.inference={isActive(){return false;},handle(message,epoch){hub.page.showInferTask(message.requestId,epoch,message.prompt,message.label||'')}};
   hub.page.receiveInference({type:'infer.request',requestId:'legacy-plan',prompt:'用户请求：\n分别查询车票和天气',label:'任务拆分'},7);
   hub.page.finishInferTask('legacy-plan',7,JSON.stringify([{title:'车票查询',task:'查询深圳到北京的车票'},
     {title:'天气查询',task:'查询北京天气'}]),false);
@@ -753,7 +789,7 @@ function setup(isServer) {
   hub.page.serviceReady = true;
   hub.page.pendingImage = 'data:image/jpeg;base64,QUJD';
   hub.page.vlTransport = { start(messages, cb, id, image) { hub.vlImage = image; return ''; }, cancel() {} };
-  hub.page.model = { activeCount() { return 0; }, cancel() {}, readinessError() { return ''; } };
+  hub.page.model = { hasPendingNativeJobs() { return false; }, activeCount() { return 0; }, cancel() {}, readinessError() { return ''; } };
   hub.channel.peerInfos = () => [];
   // selfMeetsNeeds(['vision'])：mock buildSelfEntry 已声明 capabilities=['text','vision']。
   const err = hub.page.send('看图说话');
@@ -783,7 +819,7 @@ function setup(isServer) {
   hub.page.serviceReady = true;
   let localStarts = 0;
   hub.page.model = { start() { localStarts++; return ''; }, readinessError() { return ''; },
-    cancel() {}, activeCount() { return 0; } };
+    cancel() {}, hasPendingNativeJobs() { return false; }, activeCount() { return 0; } };
   hub.page.selfEntry = () => ({ role: 'self', model: 'Qwen2.5-7B-Instruct-Q4_N_0',
     capabilities: ['text'], modelTier: 1, modelRequests: 0, memAvail: 500, memTotal: 1000, memUsage: 10 });
   hub.channel.peerInfos = () => [{ epoch: 7, peerId: 'w', ready: true, role: 'compute', name: '算力设备2' }];
@@ -814,7 +850,7 @@ function setup(isServer) {
   hub.page.serviceReady = true;
   let localStarts = 0;
   hub.page.model = { start() { localStarts++; return ''; }, readinessError() { return ''; },
-    cancel() {}, activeCount() { return 0; } };
+    cancel() {}, hasPendingNativeJobs() { return false; }, activeCount() { return 0; } };
   hub.page.selfEntry = () => ({ role: 'self', model: 'Qwen2.5-7B-Instruct-Q4_N_0',
     capabilities: ['text'], modelTier: 1, modelRequests: 0, memAvail: 500, memTotal: 1000, memUsage: 10 });
   hub.channel.peerInfos = () => [{ epoch: 7, peerId: 'w', ready: true, role: 'compute', name: '算力设备2' }];
@@ -838,7 +874,7 @@ function setup(isServer) {
   hub.page.serviceReady = true;
   let localStarts = 0;
   hub.page.model = { start() { localStarts++; return ''; }, readinessError() { return ''; },
-    cancel() {}, activeCount() { return 0; } };
+    cancel() {}, hasPendingNativeJobs() { return false; }, activeCount() { return 0; } };
   hub.page.selfEntry = () => ({ role: 'self', model: 'Qwen2.5-7B-Instruct-Q4_N_0',
     capabilities: ['text'], modelTier: 1, modelRequests: 0, memAvail: 500, memTotal: 1000, memUsage: 10 });
   hub.channel.peerInfos = () => [{ epoch: 7, peerId: 'w', ready: true, role: 'compute', name: '算力设备2' }];
@@ -858,7 +894,7 @@ function setup(isServer) {
   solo.page.serviceReady = true;
   let soloStarts = 0;
   solo.page.model = { start() { soloStarts++; return ''; }, readinessError() { return ''; },
-    cancel() {}, activeCount() { return 0; } };
+    cancel() {}, hasPendingNativeJobs() { return false; }, activeCount() { return 0; } };
   solo.channel.peerInfos = () => [];
   assert.equal(solo.page.send('```python\nprint(3)\n```'), '');
   assert.equal(solo.sent.length, 0);
@@ -874,7 +910,7 @@ function setup(isServer) {
   worker.page.serviceReady = true;
   let localStarts = 0;
   worker.page.model = { start() { localStarts++; return ''; }, readinessError() { return ''; },
-    cancel() {}, activeCount() { return 0; } };
+    cancel() {}, hasPendingNativeJobs() { return false; }, activeCount() { return 0; } };
   worker.page.selfEntry = () => ({ role: 'self', model: 'Qwen2.5-7B-Instruct-Q4_N_0',
     capabilities: ['text'], modelTier: 1, modelRequests: 0, memAvail: 500, memTotal: 1000, memUsage: 10 });
   worker.channel.selfComputeNumber = () => 2;

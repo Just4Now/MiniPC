@@ -2,7 +2,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import probe from 'libgewu_probe.so';
 import { fileIo } from '@kit.CoreFileKit';
 import { SessionPlan, SessionReuse } from './SessionReuse';
-import { manifestTier, modelRequestType, readyModelDirs, selectModelDir } from './ModelRegistry';
+import { manifestTier, modelRequestType, selectModelDir } from './ModelRegistry';
 import { classifyFromMessages, taskTextOf } from '../cluster/TaskRules';
 import { sanitizeModelOutput } from './Utf8Repair';
 
@@ -68,11 +68,14 @@ export class LocalChat {
   /** Native cleanup still owns model memory after the answer has been delivered. */
   hasPendingNativeJobs(): boolean { return this.jobs.length > 0; }
 
+  /** Switching is allowed only after native cleanup, including cached GEWU sessions. */
+  resetIdleSessions(): void { this.reuse.closeAll(); }
+
   // Basic readiness only: leave GEWU initialization to the actual request.
-  // 任意一个就绪模型即视为可用；具体目录在请求时按需求选择。
+  // 所选文字引擎必须就绪；VL 权重不能作为文字引擎使用。
   readinessError(): string {
     if (this.closed) return '模型服务已关闭。';
-    return readyModelDirs(this.filesDir).length > 0 ? '' : '模型文件缺失或无法读取。';
+    return selectModelDir(this.filesDir, []).length > 0 ? '' : '没有可用的文字模型，请检查模型选择和部署文件。';
   }
 
   /**

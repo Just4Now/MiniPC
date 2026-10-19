@@ -1,7 +1,7 @@
 import { hidebug } from '@kit.PerformanceAnalysisKit';
 import { batteryInfo, thermal } from '@kit.BasicServicesKit';
 import { DeviceInfoEntry, WireMessage } from '../protocol/ChatProtocol';
-import { deviceCapabilities, deviceTier, readyModelDirs } from '../llm/ModelRegistry';
+import { activeModelDirs, deviceCapabilities, deviceTier } from '../llm/ModelRegistry';
 
 // Lightweight status requests run often; multi-frame rosters are gated
 // separately by topology changes and a 30-second refresh interval.
@@ -22,13 +22,14 @@ class LoadCache {
 
 const loadCache: LoadCache = new LoadCache();
 
-/** filesDir/models 下首个就绪目录（展示用）；没有则空串。发现逻辑见 llm/ModelRegistry。 */
+/** Show every active model instead of mistaking the first deployed directory for the executing model. */
 export function deployedModelName(filesDir: string): string {
-  const dirs = readyModelDirs(filesDir);
-  return dirs.length > 0 ? dirs[0] : '';
+  const names = activeModelDirs(filesDir).join(' / ');
+  // The wire model field is a display label capped at 128 characters.
+  return names.length > 128 ? names.substring(0, 127) + '…' : names;
 }
 
-/** 设备级能力 = 所有就绪模型能力的并集；无模型 → []。 */
+/** 设备级能力跟随当前模型选择；无启用模型 → []。 */
 export function deployedCapabilities(filesDir: string): string[] {
   return deviceCapabilities(filesDir);
 }

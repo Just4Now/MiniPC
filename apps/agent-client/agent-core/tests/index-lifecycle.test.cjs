@@ -9,7 +9,7 @@ for (const p of [process.env.TYPESCRIPT_PATH, 'typescript', 'D:/command-line-too
 }
 if (!ts) throw new Error('Set TYPESCRIPT_PATH to the local compiler module');
 const source = fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/pages/Index.ets'), 'utf8').replace(/\r\n?/g, '\n');
-const names = ['aboutToAppear','aboutToDisappear','ensureRemoteReady','isCurrentRemoteRun','runRemoteAgent','stopGeneration','changeAgentMode'];
+const names = ['aboutToAppear','aboutToDisappear','ensureRemoteReady','isCurrentRemoteRun','runRemoteAgent','stopGeneration','changeChatMode','changeAgentMode'];
 function method(name) {
   const startPattern = new RegExp('^  (?:private )?(?:async )?' + name + '\\(', 'm');
   // Build the literal opening parenthesis without depending on a regex escape in the transport.
@@ -36,6 +36,8 @@ function harness(options={}) {
   Object.assign(sandbox,{
     loadAgentEnabled:()=>options.storedAgent??false,
     saveAgentEnabled:async(_context,value)=>{records.settings.push(value);},
+    loadChatMode:()=>options.storedMode??(options.storedAgent?'agent_split':'chat'),
+    saveChatMode:async(_context,mode)=>{records.settings.push(mode!=='chat');records.modes=(records.modes||[]).concat(mode);},
     buildPlainChatPrompt:(task,budget)=>{records.plainBudget=budget;return task;},
     createSkillSnapshot:()=>{records.skills++;return options.skill?.promise??Promise.resolve({});},
     createConfiguredLoopToolRegistry:()=>{records.registries++;return Promise.resolve({close:async()=>{}});}
@@ -45,6 +47,7 @@ function harness(options={}) {
   Object.assign(p,{pageActive:true,remoteRunGeneration:0,stopRequested:false,sending:false,message:'',skillSnapshot:options.skill?null:{},toolRegistryIncludesSkills:true,toolRegistryPromise:options.tools?.promise??Promise.resolve({close:async()=>{}}),activeRunner:null,liveReplyId:-1,liveReplyPending:false,processId:-1,collabController:null,conversation:{turns:[],addUser(x){this.turns.push(['user',x]);},addAssistant(x){this.turns.push(['assistant',x]);}},getAbilityContext:()=>({}),setCollaborationKeepScreenOn(){},refreshLinkChrome(){},appendLine(...x){records.lines.push(x);},appendUserMessage(){},appendProcess(e){records.events.push(e);},finishInferenceMetricsTask(){},formatElapsed:()=>'1.0 秒',commitLiveAnswer(x){records.commits.push(x);},dropLivePlaceholder(){this.liveReplyId=-1;},beginLiveReply(){records.setup.push('placeholder');},showLiveReply(){records.setup.push('preview');},addEvent(e){records.events.push(e);},disposeSingleDeviceSession(){},restoreConversation(){},buildRemoteConversation(){return this.conversation;},setLivePhase(x){records.phases.push(x);},parallelObserver(){return {};},createParallelRunner(){return {requestStop(){records.parallelStops=(records.parallelStops||0)+1;},async tryRun(task,conversation,observer,listener){records.parallelTries=(records.parallelTries||0)+1;if(!options.parallel)return false;listener({kind:'FINAL',text:'merged '+task,status:options.parallel==='partial'?'partial':undefined});return true;}};}});
   if(options.ready) p.ensureRemoteReady=()=>options.ready.promise;
   p.agentEnabled=options.agentEnabled??true;
+  p.chatMode=options.chatMode??(p.agentEnabled?'agent_split':'chat');
   p.conversation.toChatMessages=()=>p.conversation.turns.map(([role,content])=>({role,content}));
   return {p,client,channel,records};
 }
@@ -125,6 +128,12 @@ test('a handled parallel run skips the single-device runner and is persisted onc
 });
 test('a partial parallel answer is shown but stored only as a note',async()=>{
  const h=harness({parallel:'partial'});await h.p.runRemoteAgent('q','q','');assert.deepEqual(h.records.commits,['merged q']);assert.deepEqual(h.p.conversation.turns,[['user','q'],['assistant','（上一轮未得到完整回答）']]);
+});
+test('agent without splitting keeps tool calls on one runner',async()=>{
+ const h=harness({chatMode:'agent'});await h.p.runRemoteAgent('q','q','');
+ assert.equal(h.records.parallelTries,undefined);assert.equal(h.records.runs,1);assert.equal(h.records.construct,1);
+ h.p.changeChatMode('agent_split');assert.deepEqual(h.records.modes,['agent_split']);
+ h.p.changeChatMode('chat');assert.equal(h.p.agentEnabled,false);assert.equal(h.p.chatMode,'chat');
 });
 test('a declined split falls through to the single-device runner',async()=>{
  const h=harness();await h.p.runRemoteAgent('q','q','');assert.equal(h.records.parallelTries,1);assert.equal(h.records.runs,1);

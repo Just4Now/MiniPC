@@ -36,10 +36,24 @@
     .status.ok { color:var(--ok); background:rgba(26,155,106,.1); }
     .status.wait { color:var(--wait); background:rgba(201,132,18,.12); }
     .status.err { color:var(--err); background:rgba(196,71,58,.1); }
-    .connect { margin-left:auto; flex-shrink:0; border:0; border-radius:16px; padding:8px 12px; background:#fff; color:var(--accent); font-size:13px; font-weight:650; cursor:pointer; }
+    .connect { flex-shrink:0; border:0; border-radius:16px; padding:8px 12px; background:#fff; color:var(--accent); font-size:13px; font-weight:650; cursor:pointer; }
     .connect:disabled { opacity:.45; cursor:default; }
+    .gear { margin-left:auto; width:36px; height:36px; padding:0; border-radius:18px; font-size:18px; line-height:1; }
     .clear-tasks { margin-left:8px; border:0; border-radius:12px; padding:2px 10px; background:#fff; color:var(--accent); font-size:12px; font-weight:650; cursor:pointer; }
     .stats { display:flex; gap:8px; }
+    .settings { position:fixed; inset:0; z-index:5; display:flex; flex-direction:column; gap:12px; padding:16px 20px; background:var(--bg); overflow:auto; }
+    .settings[hidden] { display:none; }
+    .settings-head { display:flex; align-items:center; gap:12px; }
+    .settings-head h2 { margin:0; font-size:22px; font-weight:700; }
+    .settings-back { border:0; border-radius:16px; padding:8px 12px; background:#fff; color:var(--accent); font:inherit; font-size:14px; font-weight:650; cursor:pointer; }
+    .settings-label { margin:6px 0 0; font-size:16px; font-weight:650; color:var(--muted); }
+    .model-settings { padding:16px; border:1px solid var(--line); border-radius:16px; background:#fff; }
+    .model-fields { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; margin-top:12px; }
+    .model-field { display:flex; flex:1 1 210px; min-width:0; flex-direction:column; gap:6px; font-size:13px; color:var(--muted); }
+    .model-field select { width:100%; min-width:0; min-height:44px; padding:8px; border:1px solid var(--line); border-radius:10px; background:#f7f9fd; color:var(--ink); font:inherit; }
+    .model-apply { min-height:44px; border:0; border-radius:10px; padding:8px 16px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+    .model-apply:disabled { opacity:.45; cursor:default; }
+    .model-hint { margin:10px 0 0; font-size:13px; color:var(--muted); line-height:1.5; }
     .stat { flex:1; max-width:200px; padding:10px 12px; border-radius:16px; background:#fff; display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
     .stat span { font-size:12px; color:var(--muted); }
     .stat b { font-size:20px; font-weight:720; color:var(--ink); }
@@ -215,8 +229,24 @@
     <header>
       <svg class="brand" viewBox="0 0 36 36" aria-hidden="true"><rect width="36" height="36" rx="12" fill="#3d5bdb"/><circle cx="11" cy="18" r="3" fill="#fff"/><circle cx="25" cy="12" r="3" fill="#fff"/><circle cx="25" cy="24" r="3" fill="#fff"/><path stroke="#fff" stroke-width="1.6" d="M13.6 16.8 22.4 13.2M13.6 19.2 22.4 22.8"/></svg>
       <div class="head"><h1 id="title">算力</h1><p id="connection" class="status wait" role="status">正在准备…</p></div>
+      <button id="openSettings" class="connect gear" type="button" aria-label="设置">⚙</button>
       <button id="connect" class="connect" type="button" disabled>启用近场</button>
     </header>
+    <section id="settings" class="settings" hidden>
+      <div class="settings-head">
+        <button id="closeSettings" class="settings-back" type="button">返回</button>
+        <h2>设置</h2>
+      </div>
+      <h3 class="settings-label">模型选择 · 本机</h3>
+      <section id="modelSettings" class="model-settings">
+        <div class="model-fields">
+          <label class="model-field" for="selectedModel">当前模型<select id="selectedModel"></select></label>
+          <button id="applyModels" class="model-apply" type="button" disabled>应用选择</button>
+        </div>
+        <p id="modelHint" class="model-hint">仅列出本机已部署的模型，设置会自动保存。</p>
+        <p id="modelMessage" class="model-hint" role="status" aria-live="polite"></p>
+      </section>
+    </section>
     <div class="stats" id="stats"></div>
     <aside class="device-panel" id="devicePanel" aria-label="附近设备">
       <div class="section devices-label" id="devicesToggle" role="button" tabindex="0" aria-expanded="true">附近设备<span id="deviceCount"></span><span class="dev-sum" id="deviceSummary"></span></div>
@@ -267,6 +297,59 @@
     const previewClear=document.getElementById('previewClear');
     const statusView=document.getElementById('connection');
     const titleView=document.getElementById('title');
+    const settingsView=document.getElementById('settings');
+    const modelSettingsView=document.getElementById('modelSettings');
+    const selectedModelView=document.getElementById('selectedModel');
+    const modelHintView=document.getElementById('modelHint');
+    const applyModelsButton=document.getElementById('applyModels');
+    const modelMessageView=document.getElementById('modelMessage');
+    let modelState=null, modelStateSignature='', modelDraft=false, modelPollAt=0;
+    function refreshModels(){
+      if(!settingsView||settingsView.hidden||typeof window.chatBridge.models!=='function')return;
+      try{renderModelSettings(JSON.parse(window.chatBridge.models()));}catch(error){}
+    }
+    function openSettings(){if(!settingsView)return;settingsView.hidden=false;refreshModels();}
+    function closeSettings(){if(settingsView)settingsView.hidden=true;}
+    const openSettingsButton=document.getElementById('openSettings');
+    const closeSettingsButton=document.getElementById('closeSettings');
+    if(openSettingsButton)openSettingsButton.addEventListener('click',openSettings);
+    if(closeSettingsButton)closeSettingsButton.addEventListener('click',closeSettings);
+    function renderModelSettings(state){
+      if(!state||!modelSettingsView)return;
+      modelState=state;
+      const signature=JSON.stringify([state.selected,state.options]);
+      if(signature!==modelStateSignature){
+        modelStateSignature=signature;modelDraft=false;
+        const entries=[['','自动（按请求选择）']];
+        for(const choice of state.options||[])entries.push([choice.name,shortModel(choice.name)+(choice.vision?'（仅带图片）':'（文字）')]);
+        if(state.selected&&!entries.some(entry=>entry[0]===state.selected))entries.push([state.selected,shortModel(state.selected)+'（不可用）']);
+        selectedModelView.innerHTML=entries.map(entry=>'<option value="'+esc(entry[0])+'"'+(entry[0]===state.selected?' selected':'')+'>'+esc(entry[1])+'</option>').join('');
+        selectedModelView.value=state.selected;
+      }
+      selectedModelView.disabled=state.locked;
+      updateModelHint();
+      applyModelsButton.disabled=state.locked||!modelDraft;
+      if(state.locked)modelMessageView.textContent='本机正在推理或释放模型，结束后可切换。';
+      else if(modelMessageView.textContent==='本机正在推理或释放模型，结束后可切换。')modelMessageView.textContent='';
+    }
+    function updateModelHint(){
+      const choice=modelState&&(modelState.options||[]).find(item=>item.name===selectedModelView.value);
+      modelHintView.textContent=!selectedModelView.value?'自动模式按请求选择文字或图片模型。设置保存在本机。':
+        (choice?(choice.vision?'选择此模型后，本机只处理带图片的请求。':'选择此模型后，本机只处理文字请求。'):'所选模型当前不可用，请重新选择。');
+    }
+    function modelEdited(){
+      modelDraft=true;applyModelsButton.disabled=!modelState||modelState.locked;
+      modelMessageView.textContent='点击“应用选择”后生效。';
+      updateModelHint();
+    }
+    if(selectedModelView)selectedModelView.addEventListener('change',modelEdited);
+    if(applyModelsButton)applyModelsButton.addEventListener('click',()=>{
+      try{
+        const error=window.chatBridge.selectModel(selectedModelView.value);
+        modelMessageView.textContent=error||'已保存，将用于后续请求。';
+        if(!error){modelDraft=false;applyModelsButton.disabled=true;}
+      }catch(error){modelMessageView.textContent='设置未保存，请重试。';}
+    });
     const filtersView=document.getElementById('filters');
     const taskCountView=document.getElementById('taskCount');
     const detailView=document.getElementById('detail');
@@ -287,6 +370,7 @@
     document.addEventListener('keydown',event=>{
       if(event.key==='Tab')allowFocusPreparation=true;
       if(event.key==='Escape'&&(detailKey||detailGroupKey))closeDetail();
+      else if(event.key==='Escape')closeSettings();
     });
     let available=false, pendingText='正在生成…', pendingImage='';
     let jobs=[], devices=[], running=0, selfLabel='算力设备1';
@@ -458,7 +542,7 @@
     }
     function shortModel(name){
       if(!name)return '无模型';
-      return String(name).replace(/-Instruct.*$/,'').replace(/-Q4.*$/,'');
+      return String(name).split(' / ').map(part=>part.replace(/-instruct.*$/i,'').replace(/-Q4.*$/i,'')).join(' / ');
     }
     function thermalLabel(level){
       if(level===0)return '清凉';
@@ -794,6 +878,7 @@
         render();return;
       }
       if(event.kind==='dashboard'){
+        renderModelSettings(event.modelSettings);
         setSelfLabel(event.selfLabel);
         if(typeof event.text==='string'&&event.text)setStatus(event.text,event.connecting===true,true);
         if(event.connectLabel)connectButton.textContent=event.connectLabel;
@@ -813,6 +898,7 @@
       }
     };
     if(typeof setInterval==='function')setInterval(()=>{
+      if(Date.now()-modelPollAt>=2000){modelPollAt=Date.now();refreshModels();}
       let dirty=groups.some(groupRunning);
       for(const job of jobs){
         if(!job.running||!job.startedAt)continue;

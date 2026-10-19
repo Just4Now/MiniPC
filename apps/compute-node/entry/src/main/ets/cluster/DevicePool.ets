@@ -89,6 +89,7 @@ function better(a: PoolNode, b: PoolNode, cost: (epoch: number) => number): bool
 
 /** 能力是硬门槛：needs 的每一项都必须在节点声明的 capabilities 里。 */
 export function meetsCapabilities(node: PoolNode, needs: string[]): boolean {
+  if (needs.length === 0) return node.capabilities.indexOf('text') >= 0;
   for (const need of needs) {
     if (node.capabilities.indexOf(need) < 0) return false;
   }
@@ -129,8 +130,7 @@ function compareTier(node: PoolNode, best: PoolNode, taskTier: number): number {
  * 档位绝不构成可用性门槛）。taskTier = 0 与旧版完全等价。
  */
 export function pickIdleFor(nodes: PoolNode[], needs: string[], taskTier: number = 0): PoolNode | null {
-  const capable = needs.length === 0 ? nodes :
-    nodes.filter((node: PoolNode): boolean => meetsCapabilities(node, needs));
+  const capable = nodes.filter((node: PoolNode): boolean => meetsCapabilities(node, needs));
   if (taskTier < 1) return pickIdle(capable);
   let best: PoolNode | null = null;
   for (const node of idleNodes(capable)) {

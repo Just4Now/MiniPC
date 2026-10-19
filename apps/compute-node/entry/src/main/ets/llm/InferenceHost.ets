@@ -160,7 +160,8 @@ export class InferenceHost implements RelayLocal {
     const missing = this.model.readinessError();
     const cluster = this.clusterProvider === null ? null : this.clusterProvider();
     // The hub can serve through another device even when its own model is unavailable.
-    const ready = missing.length === 0 || (cluster !== null && cluster.total > 0);
+    const ready = missing.length === 0 || (this.vision !== null && this.vision.readinessError().length === 0) ||
+      (cluster !== null && cluster.total > 0);
     const profile: InferProfile = {
       modelId: 'qwen25-7b-instruct-q4',
       modelRevision: 'admission-open',

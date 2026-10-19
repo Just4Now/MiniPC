@@ -31,7 +31,7 @@ const context = {
     }
     if (name === '../llm/ModelRegistry') {
       return {
-        readyModelDirs: () => registryDirs.slice(),
+        activeModelDirs: () => registryDirs.slice(),
         deviceCapabilities: () => unionCaps.slice(),
         deviceTier: () => registryTier
       };
@@ -75,9 +75,11 @@ assert.equal(buildSelfEntry('/app', 0, '本机', 'self').model, 'Qwen2.5-7B-Inst
 assert.equal(deployedCapabilities('/app').join(','), 'text');
 registryDirs = ['Qwen2.5-7B-Instruct-Q4_N_0', 'Qwen2.5-VL-7B-Q4_N_0'];
 unionCaps = ['text', 'vision'];
-assert.equal(deployedModelName('/app'), 'Qwen2.5-7B-Instruct-Q4_N_0', 'display model is the first ready dir');
+assert.equal(deployedModelName('/app'), registryDirs.join(' / '), 'display includes all active models');
 assert.equal(buildSelfEntry('/app', 0, '本机', 'self').capabilities.join(','), 'text,vision',
   'device capability is the union across deployed models');
+registryDirs = ['A'.repeat(100), 'B'.repeat(100)];
+assert.equal(deployedModelName('/app').length, 128, 'multiple model names stay within the deviceInfo wire limit');
 // 档位上报：无模型省略字段；有声明带上；reply 透传；applyDeviceInfo 只拷合法值（旧构建的 3 归一为 2）
 assert.equal(buildSelfEntry('/app', 0, '本机', 'self').modelTier, undefined,
   'no ready model omits modelTier (old-peer semantics)');

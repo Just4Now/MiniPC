@@ -21,7 +21,7 @@ if(EXISTS "${QWEN2VL_SDK_DIR}/libqwen2vl_sdk.so")
   # 预编译产物：src/main/cpp/libs/${OHOS_ARCH}/（libqwen2vl_sdk.so = NPU 版 9,388,104B，
   # 含 knpu 符号 + DT_NEEDED libc++.so->libcxx.so 等长 patch 版；libcxx.so = SDK 的 C++
   # 运行时，自定义名规避打包器对 libc++.so 的系统库白名单丢弃）。
-  add_library(qwenvl_engine SHARED napi_engine.cpp)
+  add_library(qwenvl_engine SHARED napi_engine.cpp vl_worker_client.cpp)
 
   add_library(qwen2vl_sdk SHARED IMPORTED)
   set_target_properties(qwen2vl_sdk PROPERTIES

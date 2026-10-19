@@ -62,7 +62,7 @@ const { LocalChat } = context.exports;
 const chat = new LocalChat('/files');
 // 就绪检查：任意就绪目录即可，不再逐个点名文件
 registryDirs = [];
-assert.equal(chat.readinessError(), '模型文件缺失或无法读取。');
+assert.equal(chat.readinessError(), '没有可用的文字模型，请检查模型选择和部署文件。');
 registryDirs = [TEXT_DIR];
 assert.equal(chat.readinessError(), '');
 assert.equal(starts, 0, 'readiness must never start GEWU');

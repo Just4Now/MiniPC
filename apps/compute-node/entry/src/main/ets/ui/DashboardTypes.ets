@@ -1,5 +1,16 @@
 import { TaskGroupView } from './TaskBoard';
 
+export interface ModelSettingsView {
+  selected: string;
+  options: ModelChoiceView[];
+  locked: boolean;
+}
+
+export interface ModelChoiceView {
+  name: string;
+  vision: boolean;
+}
+
 export interface PageEvent {
   kind: string;
   text: string;
@@ -14,6 +25,7 @@ export interface PageEvent {
   devices?: DeviceView[];
   jobs?: JobView[];
   groups?: TaskGroupView[];
+  modelSettings?: ModelSettingsView;
 }
 
 export interface DeviceView {

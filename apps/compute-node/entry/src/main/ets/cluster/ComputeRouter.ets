@@ -85,8 +85,9 @@ export function dispatchKey(entry: DispatchEntry): string {
   return originKeyOf(entry.originEpoch, entry.originRequestId);
 }
 
-/** 需求为空时任何有模型节点都可服务；否则每一项都要在节点能力表里。 */
+/** 空需求沿用旧协议的文字请求语义；否则每一项都要在节点能力表里。 */
 export function meetsNeeds(node: ScheduleNode, needs: string[]): boolean {
+  if (needs.length === 0) return node.capabilities.indexOf('text') >= 0;
   for (const need of needs) {
     if (node.capabilities.indexOf(need) < 0) return false;
   }

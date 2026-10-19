@@ -11,6 +11,9 @@ function node(partial) {
   return item;
 }
 assert.equal(pickNode([]), null);
+const imageOnly = node({ name: 'VL', model: 'VL', capabilities: ['vision'] });
+assert.equal(pickNode([imageOnly]), null, 'legacy empty needs still means text; VL-only node must not accept it');
+assert.equal(pickNode([imageOnly], ['vision']), imageOnly, 'VL-only node accepts image tasks');
 assert.equal(pickNode([node({ name: '空', model: '' })]), null, 'no model is not schedulable');
 const idle = node({ name: '空闲', isSelf: true, model: 'Qwen', requests: 0, memAvail: 1000 });
 const busy = node({ name: '忙', model: 'Qwen', requests: 2, memAvail: 9000 });

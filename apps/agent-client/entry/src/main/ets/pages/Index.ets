@@ -39,7 +39,7 @@ import { nearbyChannel } from '../nearby/LinkEnhanceChannel';
 import { inferenceClient, INFERENCE_STOPPED } from '../model/InferenceClient';
 import { TaskChildSnapshot, TaskSnapshot } from '../protocol/ChatProtocol';
 import { RemoteComputeModel } from '../model/RemoteComputeModel';
-import { loadAgentEnabled, saveAgentEnabled } from '../model/ChatModeStore';
+import { ChatMode, loadChatMode, saveChatMode } from '../model/ChatModeStore';
 import { buildPlainChatPrompt } from '../model/PlainChat';
 import { pickAttachment, readTextExcerpt, SavedAttachment } from '../media/ChatAttach';
 import { encodeLocalImageBase64 } from '../media/ImageEncode';
@@ -236,6 +236,8 @@ struct Index {
   @State message: string = '';
   @State sending: boolean = false;
   @State agentEnabled: boolean = false;
+  @State chatMode: ChatMode = 'chat';
+  @State settingsVisible: boolean = false;
   @State modelStatus: string = '远程算力';
   @State titleText: string = '聊天';
   @State statusText: string = '正在寻找算力设备…';
@@ -309,7 +311,8 @@ struct Index {
     this.pageActive = true;
     this.stopRequested = false;
     const context = this.getAbilityContext();
-    this.agentEnabled = loadAgentEnabled(context);
+    this.chatMode = loadChatMode(context);
+    this.agentEnabled = this.chatMode !== 'chat';
     this.restoreConversation();
     ensureBundledWorkspaceFiles(context).catch((_error: Error): void => {});
     nearbyChannel.initialize(context);
@@ -347,6 +350,96 @@ struct Index {
   }
 
   build() {
+    if (this.settingsVisible) {
+      this.settingsPage();
+    } else {
+      this.chatPage();
+    }
+  }
+
+  @Builder
+  settingsPage() {
+    Column() {
+      Row() {
+        Button('返回')
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#0F8A74')
+          .backgroundColor(Color.White)
+          .borderRadius(16)
+          .height(36)
+          .padding({ left: 12, right: 12 })
+          .onClick(() => {
+            this.settingsVisible = false;
+          })
+        Text('设置')
+          .fontSize(17)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#16332C')
+          .margin({ left: 12 })
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+
+      Text('对话模式')
+        .fontSize(13)
+        .fontColor('#6B7F79')
+        .width('100%')
+        .margin({ top: 18, bottom: 8 })
+
+      this.modeOption('chat', '普通聊天', '算力直接回答，不调用工具')
+      this.modeOption('agent', 'Agent（不拆分）', '调用工具，不拆分任务')
+      this.modeOption('agent_split', 'Agent（拆分任务）', '自动规划任务并调用工具')
+
+      if (this.sending) {
+        Text('生成期间需先停止再切换模式。')
+          .fontSize(12)
+          .fontColor('#6B7F79')
+          .width('100%')
+          .margin({ top: 8 })
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .alignItems(HorizontalAlign.Start)
+    .padding({ left: 16, right: 16, top: 14, bottom: 16 })
+    .backgroundColor('#EEF6F3')
+  }
+
+  @Builder
+  modeOption(mode: ChatMode, title: string, detail: string) {
+    Row() {
+      Column() {
+        Text(title)
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#16332C')
+        Text(detail)
+          .fontSize(12)
+          .fontColor('#6B7F79')
+          .margin({ top: 2 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Text(this.chatMode === mode ? '当前' : '')
+        .fontSize(12)
+        .fontColor('#0F8A74')
+    }
+    .width('100%')
+    .padding({ left: 14, right: 14, top: 12, bottom: 12 })
+    .margin({ bottom: 8 })
+    .backgroundColor(Color.White)
+    .borderRadius(16)
+    .border({ width: this.chatMode === mode ? 1 : 0, color: '#0F8A74' })
+    .enabled(!this.sending)
+    .onClick(() => {
+      this.changeChatMode(mode);
+    })
+  }
+
+  @Builder
+  chatPage() {
     Column() {
       Row() {
         Image($r('app.media.icon'))
@@ -385,6 +478,20 @@ struct Index {
         .layoutWeight(1)
         .margin({ left: 10 })
 
+        Button('⚙')
+          .fontSize(18)
+          .fontColor('#0F8A74')
+          .backgroundColor(Color.White)
+          .borderRadius(18)
+          .width(36)
+          .height(36)
+          .padding(0)
+          .margin({ right: 8 })
+          .accessibilityText('设置')
+          .onClick(() => {
+            this.settingsVisible = true;
+          })
+
         Button('清除')
           .fontSize(13)
           .fontWeight(FontWeight.Medium)
@@ -414,33 +521,6 @@ struct Index {
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
-
-      Row() {
-        Column() {
-          Text(this.agentEnabled ? 'Agent 模式' : '普通聊天')
-            .fontSize(14)
-            .fontWeight(FontWeight.Medium)
-            .fontColor('#16332C')
-          Text(this.agentEnabled ? '自动规划任务并调用工具' : '算力直接回答，不调用工具')
-            .fontSize(12)
-            .fontColor('#6B7F79')
-            .margin({ top: 2 })
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-        Toggle({ type: ToggleType.Switch, isOn: this.agentEnabled })
-          .selectedColor('#0F8A74')
-          .accessibilityText('开启或关闭 Agent')
-          .enabled(!this.sending)
-          .onChange((enabled: boolean): void => {
-            this.changeAgentMode(enabled);
-          })
-      }
-      .width('100%')
-      .padding({ left: 12, right: 8, top: 10, bottom: 10 })
-      .margin({ top: 10, bottom: 4 })
-      .backgroundColor('#F7FBFA')
-      .borderRadius(16)
 
       Scroll(this.scroller) {
         Column() {
@@ -1170,15 +1250,21 @@ struct Index {
   }
 
   private changeAgentMode(enabled: boolean): void {
-    if (this.sending || enabled === this.agentEnabled) { return; }
-    this.agentEnabled = enabled;
-    if (!enabled) {
+    this.changeChatMode(enabled ? 'agent_split' : 'chat');
+  }
+
+  private changeChatMode(mode: ChatMode): void {
+    if (this.sending || mode === this.chatMode) { return; }
+    const leavingAgent = this.agentEnabled && mode === 'chat';
+    this.chatMode = mode;
+    this.agentEnabled = mode !== 'chat';
+    if (leavingAgent) {
       const tools = this.toolRegistryPromise;
       this.toolRegistryPromise = null;
       this.toolRegistryIncludesSkills = false;
       tools?.then(async (registry: ToolRegistry): Promise<void> => registry.close()).catch((_error: Error): void => {});
     }
-    saveAgentEnabled(this.getAbilityContext(), enabled).catch((_error: Error): void => {
+    saveChatMode(this.getAbilityContext(), mode).catch((_error: Error): void => {
       if (this.pageActive) {
         this.appendLine('Error', '模式已切换，但未能保存设置，重启后请重新选择。', BubbleKind.ERROR);
       }
@@ -1188,7 +1274,8 @@ struct Index {
   private async runRemoteAgent(task: string, display: string, imagePath: string,
     imagePayload: string = ''): Promise<void> {
     if (!this.pageActive || this.sending) { return; }
-    const useAgent = this.agentEnabled;
+    const mode: ChatMode = this.chatMode === 'agent' || this.chatMode === 'chat' ? this.chatMode : 'agent_split';
+    const useAgent = mode !== 'chat';
     const generation = ++this.remoteRunGeneration;
     this.stopRequested = false;
     this.message = '';
@@ -1313,15 +1400,13 @@ struct Index {
         this.addEvent(event);
       };
       const conversation = this.buildRemoteConversation();
-      // Independent parts of a bundled request run on separate compute devices when
-      // several are idle; every other request keeps the single-device path below.
-      const parallel = this.createParallelRunner(generation, tools, skillSnapshot);
-      this.activeParallel = parallel;
-      // 带图请求不走并行拆分：并行分支会为每个子任务新建 RemoteComputeModel（见
-      // createParallelRunner），附图只注入到上面这一个主模型。带图一律走下面的单模型
-      // 路径，保证图纸只被理解一次、且第一跳就带上。
+      // 不拆分的 Agent 直接走下面的单模型工具循环。拆分模式才把独立子任务分到空闲算力。
+      // 带图请求同样不拆：并行分支会为每个子任务新建 RemoteComputeModel，附图只注入到
+      // 上面这一个主模型。
       let handled = false;
-      if (imagePayload.length === 0) {
+      if (imagePayload.length === 0 && mode === 'agent_split') {
+        const parallel = this.createParallelRunner(generation, tools, skillSnapshot);
+        this.activeParallel = parallel;
         handled = await parallel.tryRun(task, conversation, this.parallelObserver(generation), listener);
       }
       if (!handled && this.isCurrentRemoteRun(generation)) {
