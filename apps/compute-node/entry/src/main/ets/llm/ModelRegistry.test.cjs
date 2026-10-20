@@ -172,3 +172,11 @@ assert.equal(selectModelDir('/switch', []), '', 'missing pinned model never sile
 assert.equal(saveModelSelection('/switch', {model:''}), '', 'automatic mode can recover a missing pin');
 assert.equal(selectModelDir('/switch', []), 'Large');
 console.log('PASS: model discovery, manifest capabilities, VL layout, per-need model selection, request type, manifest tier and tiered dir picking');
+// New GEWU families use their deployed API configuration without model-name branches.
+const qwen35=JSON.parse(require('node:fs').readFileSync(require('node:path').resolve(__dirname,'../../../../../../../configs/models/qwen3_5/api_config.json'),'utf8'));
+markReady('/new-family/models/Qwen3.5-9B-Q4_N_0_G128');
+files['/new-family/models/Qwen3.5-9B-Q4_N_0_G128/api_config.json']=JSON.stringify(qwen35);
+assert.equal(modelRequestType('/new-family','Qwen3.5-9B-Q4_N_0_G128'),'qwen3_5');
+assert.equal(selectModelDir('/new-family',[]),'Qwen3.5-9B-Q4_N_0_G128');
+assert.equal(deviceCapabilities('/new-family').join(','),'text');
+assert.equal(qwen35.hparams.linear_layers_per_group,3);assert.equal(qwen35.format,'gewu');

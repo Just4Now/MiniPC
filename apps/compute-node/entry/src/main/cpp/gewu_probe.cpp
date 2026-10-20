@@ -29,6 +29,7 @@ struct Job {
     // that callback is terminal; waiting for a JS round trip only adds stalls.
     bool singleShot = false;
     int waitSeconds = 0;
+    int64_t startedMs = 0;
     std::string utf8Pending;
 };
 
@@ -181,8 +182,11 @@ static Job* OccupyJobLocked(Probe& state)
 static void EventLocked(Probe& state, uintptr_t id, const std::string& event, const std::string& payload)
 {
     const int64_t t = state.t0 == 0 ? 0 : NowMs() - state.t0;
+    const Job* job = FindJobLocked(state, id);
+    const std::string elapsed = job == nullptr ? "" :
+        ",\"elapsedMs\":" + std::to_string(NowMs() - job->startedMs);
     std::string line = "{\"event\":" + Quote(event) + ",\"id\":" + Quote(std::to_string(id)) +
-        ",\"t\":" + std::to_string(t) + ",\"payload\":" + Quote(payload) + "}";
+        ",\"t\":" + std::to_string(t) + elapsed + ",\"payload\":" + Quote(payload) + "}";
     if (state.log.is_open()) state.log << line << std::endl;
     state.events.push_back(line);
     OH_LOG_Print(LOG_APP, LOG_INFO, 0xD003F00, "GewuProbe", "%{public}s", line.c_str());
@@ -301,9 +305,8 @@ static int DefaultWaitSeconds()
 #ifdef GEWU_PROBE_TEST
     return probeWaitSeconds;
 #else
-    // stream:false delivers one callback when generation finishes. A long answer
-    // has no callback until then, so this must stay inside the chat hard budget
-    // and must not retry the same prompt.
+    // Both streaming and single-shot requests stay inside the chat hard budget.
+    // A missing finish marker must time out without reissuing the same prompt.
     return 150;
 #endif
 }
@@ -508,6 +511,7 @@ static uintptr_t Begin(const std::string& modelPath, const std::string& request,
     }
     Job* job = OccupyJobLocked(state);
     job->id = ++state.nextId;
+    job->startedMs = NowMs();
     job->running = true;
     job->singleShot = request.find("\"stream\":false") != std::string::npos;
     job->waitSeconds = WaitSecondsFor(waitSeconds);

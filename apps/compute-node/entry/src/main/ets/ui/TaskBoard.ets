@@ -23,8 +23,8 @@ export class TaskBoard {
     // A group that went quiet and was marked unknown may still be revived by a newer revision.
     if (previous !== undefined && ((previous.endedAt > 0 && previous.phase !== 'unknown') || task.revision <= previous.revision ||
       previous.startedAt !== task.startedAt || previous.title !== task.title ||
-      previous.subtasks.length !== task.subtasks.length || previous.subtasks.some((child, index) =>
-        child.id !== task.subtasks[index].id || child.title !== task.subtasks[index].title))) return false;
+      (previous.subtasks.length > 0 && (previous.subtasks.length !== task.subtasks.length || previous.subtasks.some((child, index) =>
+        child.id !== task.subtasks[index].id || child.title !== task.subtasks[index].title))))) return false;
     if (previous === undefined && this.tasks.size >= 64) {
       const finished = Array.from(this.tasks.values()).filter((item: TaskGroupView): boolean => item.endedAt > 0)
         .sort((a: TaskGroupView, b: TaskGroupView): number => a.endedAt - b.endedAt);
@@ -34,14 +34,15 @@ export class TaskBoard {
     const subtasks: TaskChildSnapshot[] = [];
     for (const child of task.subtasks) {
       const copy: TaskChildSnapshot = {
-        id: child.id, title: child.title, device: child.device, phase: child.phase,
+        id: child.id, title: child.title, input: child.input, activity: child.activity, device: child.device, phase: child.phase,
         detail: child.detail, result: child.result, resultTruncated: child.resultTruncated,
         startedAt: child.startedAt, endedAt: child.endedAt
       };
       subtasks.push(copy);
     }
     const view: TaskGroupView = {
-      id: task.id, title: task.title, phase: task.phase, revision: task.revision,
+      id: task.id, title: task.title, input: task.input, activity: task.activity, inputTruncated: task.inputTruncated,
+      answerTruncated: task.answerTruncated, phase: task.phase, revision: task.revision,
       startedAt: task.startedAt, endedAt: task.endedAt, answer: task.answer, subtasks: subtasks,
       key: key, originEpoch: epoch, origin: origin, executor: executor
     };

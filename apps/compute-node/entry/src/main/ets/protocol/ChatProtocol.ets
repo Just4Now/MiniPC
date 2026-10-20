@@ -1,5 +1,19 @@
 import { util } from '@kit.ArkTS';
 
+/** Engine-reported durations are separate from the caller's end-to-end clock. */
+export interface InferenceMetrics {
+  streaming: boolean;
+  outputChunks?: number;
+  /** Monotonic durations since native request start, never remote wall clocks. */
+  firstOutputMs?: number;
+  lastOutputMs?: number;
+  modelLoadMs?: number;
+  prefillMs?: number;
+  decodeMs?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+}
+
 export interface ChatMessage { role: string; content: string; }
 /** Capability vocabulary shared by device declarations and request needs. */
 export const CAPABILITY_TAGS: string[] = ['text', 'vision'];
@@ -40,6 +54,8 @@ export interface DeviceInfoEntry {
   slot?: number;
 }
 export interface TaskChildSnapshot {
+  input?: string;
+  activity?: string;
   id: string;
   title: string;
   device: string;
@@ -53,6 +69,10 @@ export interface TaskChildSnapshot {
 
 /** Display-only parent/child state; never used to authorize or schedule work. */
 export interface TaskSnapshot {
+  input?: string;
+  activity?: string;
+  inputTruncated?: boolean;
+  answerTruncated?: boolean;
   id: string;
   title: string;
   phase: string;
@@ -64,6 +84,7 @@ export interface TaskSnapshot {
 }
 
 export interface WireMessage {
+  metrics?: InferenceMetrics;
   protocol?: string;
   type: string;
   taskId?: string;
@@ -232,9 +253,26 @@ function validDeviceInfoSync(m: WireMessage): boolean {
   return true;
 }
 
+function metricNumber(value: number | undefined, integer: boolean = false): boolean {
+  return value === undefined || (typeof value === 'number' && Number.isFinite(value) && value >= 0 &&
+    (!integer || Number.isSafeInteger(value)));
+}
+
+function validInferenceMetrics(metrics: InferenceMetrics | undefined): boolean {
+  return metrics === undefined || (metrics !== null && typeof metrics === 'object' &&
+    typeof metrics.streaming === 'boolean' && metricNumber(metrics.modelLoadMs) &&
+    metricNumber(metrics.outputChunks, true) && metricNumber(metrics.firstOutputMs) &&
+    metricNumber(metrics.lastOutputMs) &&
+    metricNumber(metrics.outputChunks, true) && metricNumber(metrics.firstOutputMs) &&
+    metricNumber(metrics.lastOutputMs) &&
+    metricNumber(metrics.prefillMs) && metricNumber(metrics.decodeMs) &&
+    metricNumber(metrics.promptTokens, true) && metricNumber(metrics.completionTokens, true));
+}
+
 // Validate before forwarding anything to the model or UI.
 export function validMessage(m: WireMessage): boolean {
   if (m === null || typeof m !== 'object' || m.protocol !== PROTOCOL || typeof m.type !== 'string') return false;
+  if (!validInferenceMetrics(m.metrics)) return false;
   if (['hello', 'hello_ack'].includes(m.type)) {
     if (m.peerRole !== undefined && m.peerRole !== 'compute' && m.peerRole !== 'chat') return false;
     if (!validOptionalString(m.name, 128)) return false;
@@ -297,7 +335,10 @@ export function validTaskSnapshot(task: TaskSnapshot): boolean {
     !Number.isSafeInteger(task.revision) || task.revision < 1 ||
     !Number.isSafeInteger(task.startedAt) || task.startedAt < 1 || !Number.isSafeInteger(task.endedAt) || task.endedAt < 0 ||
     typeof task.answer !== 'string' || task.answer.length > 4096 ||
-    !Array.isArray(task.subtasks) || task.subtasks.length < 2 || task.subtasks.length > 4) return false;
+    !validOptionalString(task.input, 32768) || !validOptionalString(task.activity, 2048) ||
+    (task.inputTruncated !== undefined && typeof task.inputTruncated !== 'boolean') ||
+    (task.answerTruncated !== undefined && typeof task.answerTruncated !== 'boolean') ||
+    !Array.isArray(task.subtasks) || task.subtasks.length === 1 || task.subtasks.length > 4) return false;
   const terminal = ['done', 'partial', 'failed', 'cancelled'].includes(task.phase);
   if (terminal ? task.endedAt < task.startedAt : task.endedAt !== 0) return false;
   const ids: string[] = [];
@@ -308,7 +349,7 @@ export function validTaskSnapshot(task: TaskSnapshot): boolean {
       typeof child.device !== 'string' || (child.device !== '' && !/^算力设备[1-9][0-9]*$/.test(child.device)) ||
       !['queued', 'running', 'done', 'partial', 'failed', 'cancelled'].includes(child.phase) ||
       typeof child.detail !== 'string' || child.detail.length > 256 ||
-      !validOptionalString(child.result, 2048) ||
+      !validOptionalString(child.input, 500) || !validOptionalString(child.activity, 1024) || !validOptionalString(child.result, 2048) ||
       (child.resultTruncated !== undefined && typeof child.resultTruncated !== 'boolean') ||
       (child.startedAt !== undefined && (!Number.isSafeInteger(child.startedAt) || child.startedAt < 0)) ||
       (child.endedAt !== undefined && (!Number.isSafeInteger(child.endedAt) || child.endedAt < 0))) return false;

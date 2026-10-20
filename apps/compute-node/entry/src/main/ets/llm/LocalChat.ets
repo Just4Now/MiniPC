@@ -5,6 +5,8 @@ import { SessionPlan, SessionReuse } from './SessionReuse';
 import { manifestTier, modelRequestType, selectModelDir } from './ModelRegistry';
 import { classifyFromMessages, taskTextOf } from '../cluster/TaskRules';
 import { sanitizeModelOutput } from './Utf8Repair';
+import { InferenceMetrics } from '../protocol/ChatProtocol';
+import { outputSettings } from './OutputSettings';
 
 /**
  * 本地文本推理（GEWU probe）。档位感知选模：与 hub 侧同规则重算任务档位（消息
@@ -13,22 +15,35 @@ import { sanitizeModelOutput } from './Utf8Repair';
  * VL 通道（VlLlmTransport/QwenVlManager）v1 不感知档位——带图路径由 vision 需求
  * 独占，不在本类的选型范围内。
  *
- * GEWU 引擎内部的跨块字符替换无法避免（见 Utf8Repair.sanitizeModelOutput），
- * 本类是它的执行点：响应内容在进入 answer/回调之前一律清洗——本机 UI、
+ * 旧 GEWU 版本可能在内部替换跨块字符（见 Utf8Repair.sanitizeModelOutput），
+ * 本类保留兼容清洗：响应内容在进入 answer/回调之前统一处理——本机 UI、
  * 任务卡与 wire 下游拿到的都是同一份净化文本，幂等保证下游二次清洗安全。
  */
 
 export interface ChatMessage { role: string; content: string; }
-export interface ChatUpdate { kind: 'delta' | 'done'; text: string; error?: string; finishReason?: string; }
+export interface ChatUpdate {
+  kind: 'delta' | 'done'; text: string; error?: string; finishReason?: string; metrics?: InferenceMetrics;
+  /** Local-only time reconstructed from native monotonic duration; never put on the wire. */
+  outputAt?: number;
+}
 /** 多模态消息分片：图片（image_url 为 data URL）或文本。 */
 interface MessagePart { type: string; text?: string; image_url?: string }
 /** 推理请求的消息：纯文本 content 为字符串；带图时最后一条 user 消息为分片数组。 */
 interface RequestMessage { role: string; content: string | MessagePart[] }
 interface ChatRequest { type: string; messages: RequestMessage[]; stream: boolean; max_tokens: number; }
-export interface ChatStartOptions { maxTokens?: number; waitSeconds?: number; image?: string; }
+export interface ChatStartOptions { maxTokens?: number; waitSeconds?: number; image?: string; stream?: boolean; }
 const MAX_TOKENS = 2048;
-interface NativeEvent { event: string; id?: string; payload: string; }
-interface NativeResponse { message?: ChatMessage; finish_reason?: string | null; }
+interface NativeEvent { event: string; id?: string; payload: string; elapsedMs?: number; }
+interface NativeUsage {
+  model_load_latency?: number; prefill_latency?: number; decode_latency?: number;
+  prompt_tokens?: number; completion_tokens?: number;
+}
+interface NativeResponse { message?: ChatMessage; finish_reason?: string | null; usage?: NativeUsage; }
+
+function reportedNumber(value: number | undefined, integer: boolean = false): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 &&
+    (!integer || Number.isSafeInteger(value)) ? value : undefined;
+}
 
 interface Job {
   requestId: string;
@@ -38,6 +53,8 @@ interface Job {
   failure: string;
   finishReason: string;
   delivered: boolean;
+  nativeStartedAt: number;
+  metrics: InferenceMetrics;
   /** 请求原文（taskTextOf 拼接）：sanitizeModelOutput 的修复锚点来源。 */
   promptSource: string;
   callback: ((update: ChatUpdate) => void) | undefined;
@@ -82,11 +99,10 @@ export class LocalChat {
    * 带图请求把最后一条 user 消息编码为多模态分片（图片在前、文本在后，对齐
    * Qwen-VL 惯例）；请求类型跟随所选模型 api_config 的声明。
    *
-   * stream 固定为 false：流式回调会把跨块的字符切成 U+FFFD。真机实测单次完整
-   * 响应也不能幸免（引擎内部边界仍会吃掉多字节字符），最终的兜底是出口清洗
-   * sanitizeModelOutput（consumeEvents 处执行），stream:false 只是少制造一份。
+   * 默认流式；非流式调用可显式关闭。UTF-8 跨块字节由原生桥接保留，历史引擎
+   * 已丢失的替换字符继续由出口清洗兜底。是否结束取决于请求模式和结束标记。
    */
-  private buildRequest(messages: ChatMessage[], image: string, type: string, maxTokens: number): ChatRequest {
+  private buildRequest(messages: ChatMessage[], image: string, type: string, maxTokens: number, stream: boolean): ChatRequest {
     const out: RequestMessage[] = [];
     for (let index = 0; index < messages.length; index++) {
       const message = messages[index];
@@ -100,7 +116,7 @@ export class LocalChat {
         out.push({ role: message.role, content: message.content });
       }
     }
-    return { type: type, messages: out, stream: false, max_tokens: maxTokens };
+    return { type: type, messages: out, stream: stream, max_tokens: maxTokens };
   }
 
   start(messages: ChatMessage[], callback: (update: ChatUpdate) => void, requestId: string = '',
@@ -129,8 +145,10 @@ export class LocalChat {
     const plan: SessionPlan | undefined = this.reuseEnabled() && image.length === 0 ?
       this.reuse.plan(messages, modelDir) : undefined;
     const sent = plan !== undefined ? plan.messages : messages;
-    const request = this.buildRequest(sent, image, modelRequestType(this.filesDir, modelDir), maxTokens);
+    const streaming = options.stream === undefined ? outputSettings(this.filesDir).streaming : options.stream;
+    const request = this.buildRequest(sent, image, modelRequestType(this.filesDir, modelDir), maxTokens, streaming);
     let nativeId = 0;
+    const nativeStartedAt = Date.now();
     try {
       if (plan !== undefined && plan.key.length > 0) {
         nativeId = probe.start(this.filesDir + '/models/' + modelDir, JSON.stringify(request),
@@ -149,7 +167,8 @@ export class LocalChat {
     }
     this.jobs.push({
       requestId: requestId, nativeId: nativeId, cancelled: false, answer: '', failure: '',
-      finishReason: '', delivered: false, plan: plan, promptSource: taskTextOf(messages), callback: callback
+      finishReason: '', delivered: false, nativeStartedAt: nativeStartedAt, metrics: { streaming: request.stream },
+      plan: plan, promptSource: taskTextOf(messages), callback: callback
     });
     if (this.timer === -1) this.timer = setInterval(() => this.consumeEvents(), 80);
     return '';
@@ -201,23 +220,43 @@ export class LocalChat {
         try { response = JSON.parse(event.payload) as NativeResponse; }
         catch (_) { this.parseFailure(job); continue; }
         if (!response) { this.parseFailure(job); continue; }
+        if (response.usage !== null && typeof response.usage === 'object') {
+          const usage = response.usage;
+          job.metrics = { streaming: job.metrics.streaming,
+            outputChunks: job.metrics.outputChunks, firstOutputMs: job.metrics.firstOutputMs, lastOutputMs: job.metrics.lastOutputMs,
+            modelLoadMs: reportedNumber(usage.model_load_latency) ?? job.metrics.modelLoadMs,
+            prefillMs: reportedNumber(usage.prefill_latency) ?? job.metrics.prefillMs,
+            decodeMs: reportedNumber(usage.decode_latency) ?? job.metrics.decodeMs,
+            promptTokens: reportedNumber(usage.prompt_tokens, true) ?? job.metrics.promptTokens,
+            completionTokens: reportedNumber(usage.completion_tokens, true) ?? job.metrics.completionTokens };
+        }
         if (typeof response.message?.content === 'string' && response.message.content.length > 0) {
           // GEWU 引擎可能在回调前就把跨块多字节字符替换成 U+FFFD：先修复后剔除，
           // answer、delta 回调与最终 done 用的都是这一份净化文本。
           const content = sanitizeModelOutput(response.message.content, job.promptSource);
-          job.answer += content;
-          if (job.callback) job.callback({ kind: 'delta', text: content });
+          if (content.length > 0) {
+            const first = job.answer.length === 0;
+            const elapsed = reportedNumber(event.elapsedMs, true);
+            job.metrics = { streaming: job.metrics.streaming,
+              outputChunks: (job.metrics.outputChunks ?? 0) + 1,
+              firstOutputMs: first ? elapsed : job.metrics.firstOutputMs, lastOutputMs: elapsed,
+              modelLoadMs: job.metrics.modelLoadMs, prefillMs: job.metrics.prefillMs, decodeMs: job.metrics.decodeMs,
+              promptTokens: job.metrics.promptTokens, completionTokens: job.metrics.completionTokens };
+            job.answer += content;
+            if (job.callback) job.callback({ kind: 'delta', text: content, metrics: first ? job.metrics : undefined,
+              outputAt: elapsed === undefined ? undefined : job.nativeStartedAt + elapsed });
+          }
         }
         if (typeof response.finish_reason === 'string' && response.finish_reason.length > 0) {
           job.finishReason = response.finish_reason;
           probe.complete(job.nativeId);
-        } else if (job.answer.length > 0) {
+        } else if (!job.metrics.streaming && job.answer.length > 0) {
           // stream:false has exactly one response; native already treats it as terminal.
           job.finishReason = 'stop';
           probe.complete(job.nativeId);
         }
-        // stream:false is a complete answer. Return it before native session
-        // teardown; keep the job only for cleanup and session-cache ownership.
+        // A terminal response returns before native teardown. Streaming chunks
+        // without a finish marker must keep the session and callback alive.
         if (job.finishReason.length > 0) { this.deliver(job); }
       }
       if (event.event === 'end') {
@@ -255,7 +294,7 @@ export class LocalChat {
     const update: ChatUpdate = {
       kind: 'done', text: job.failure || (job.cancelled ?
         (job.answer ? job.answer + '\n\n已停止生成' : '已停止生成') : job.answer),
-      finishReason: job.cancelled ? 'cancelled' : job.finishReason
+      finishReason: job.cancelled ? 'cancelled' : job.finishReason, metrics: job.metrics
     };
     if (job.failure) update.error = job.failure;
     const callback = job.callback;

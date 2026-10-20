@@ -1,6 +1,8 @@
 import { TaskGroupView } from './TaskBoard';
+import { InferenceMetrics } from '../protocol/ChatProtocol';
 
 export interface ModelSettingsView {
+  streaming: boolean;
   selected: string;
   options: ModelChoiceView[];
   locked: boolean;
@@ -24,6 +26,8 @@ export interface PageEvent {
   selfLabel?: string;
   devices?: DeviceView[];
   jobs?: JobView[];
+  /** Hub-observed forwarded calls, available in task details only. */
+  remoteCalls?: JobView[];
   groups?: TaskGroupView[];
   modelSettings?: ModelSettingsView;
 }
@@ -48,6 +52,7 @@ export interface DeviceView {
 }
 
 export interface JobView {
+  metrics?: InferenceMetrics;
   input?: string;
   groupKey?: string;
   subtaskId?: string;
@@ -70,6 +75,7 @@ export interface JobView {
 }
 
 export interface ActiveJob {
+  metrics?: InferenceMetrics;
   input?: string;
   taskId?: string;
   subtaskId?: string;

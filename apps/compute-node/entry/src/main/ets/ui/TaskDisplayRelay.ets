@@ -53,9 +53,10 @@ export class TaskDisplayRelay {
       route.published = true;
       const signature = JSON.stringify(group);
       if (route.signature !== signature) { route.signature = signature; route.revision++; }
-      const task: TaskSnapshot = { id: route.id, title: group.title, phase: group.phase, revision: route.revision,
+      const task: TaskSnapshot = { id: route.id, title: group.title, input: group.input, activity: group.activity, inputTruncated: group.inputTruncated,
+        answerTruncated: group.answerTruncated, phase: group.phase, revision: route.revision,
         startedAt: group.startedAt, endedAt: group.endedAt, answer: group.answer,
-        subtasks: group.subtasks.map((child: TaskChildSnapshot): TaskChildSnapshot => ({ id: child.id, title: child.title, device: child.device,
+        subtasks: group.subtasks.map((child: TaskChildSnapshot): TaskChildSnapshot => ({ id: child.id, title: child.title, input: child.input, activity: child.activity, device: child.device,
           phase: child.phase, detail: child.detail, result: child.result, resultTruncated: child.resultTruncated,
           startedAt: child.startedAt, endedAt: child.endedAt })) };
       const message: WireMessage = { type: 'infer.task', version: 2, requestId: task.id,

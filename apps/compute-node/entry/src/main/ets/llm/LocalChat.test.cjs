@@ -30,7 +30,9 @@ const reuseExports = {};
 vm.runInNewContext(transpile(__dirname + '/SessionReuse.ets'), { exports: reuseExports, Date });
 const startArgs = [];
 let reuseOn = false;
-const context = { exports: {}, ArrayBuffer,
+let outputPreference=true;
+let clockOverride;
+const context = { exports: {}, ArrayBuffer, Date: {now:()=>clockOverride ?? Date.now()},
   setInterval(fn) { consumeTick = fn; return 1; }, clearInterval() {}, require(name) {
   if (name === 'libgewu_probe.so') return { default: {
     start(modelPath, request, ...extra) {
@@ -41,6 +43,7 @@ const context = { exports: {}, ArrayBuffer,
     cancel() {}, complete() {}, takeEvents() { return nativeEvents.splice(0); }
   } };
   if (name === './SessionReuse') return reuseExports;
+  if (name === './OutputSettings') return {outputSettings:()=>({streaming:outputPreference})};
   if (name === '@kit.CoreFileKit') return { fileIo: {accessSync:()=>reuseOn} };
   if (name === './Utf8Repair') return utf8Repair;
   if (name === '@kit.PerformanceAnalysisKit') return { hilog: { info() {} } };
@@ -66,14 +69,14 @@ assert.equal(chat.readinessError(), '没有可用的文字模型，请检查模�
 registryDirs = [TEXT_DIR];
 assert.equal(chat.readinessError(), '');
 assert.equal(starts, 0, 'readiness must never start GEWU');
-// 纯文本请求：目录与请求体保持原样（stream 固定 false，max_tokens 走 options）
+// Text requests stream by default; budgets and model selection stay independent.
 assert.equal(chat.start([{ role: 'user', content: 'hi' }], () => {}, 'a'), '');
 assert.equal(starts, 1);
 assert.equal(lastModelPath, '/files/models/' + TEXT_DIR);
 assert.deepEqual(JSON.parse(lastRequest), {
   type: 'qwen2',
   messages: [{ role: 'user', content: 'hi' }],
-  stream: false, max_tokens: 2048
+  stream: true, max_tokens: 2048
 });
 assert.equal(chat.activeCount(), 1);
 assert.equal(lastTier, 1, 'short plain text classifies light and drives tiered dir selection');
@@ -110,7 +113,7 @@ assert.deepEqual(multimodal.messages[2].content, [
   { type: 'image_url', image_url: 'data:image/jpeg;base64,QUJD' },
   { type: 'text', text: '这张图里有什么' }
 ], 'the last user message becomes image-then-text parts');
-assert.equal(multimodal.stream, false, 'the merged request keeps the non-streaming GEWU contract');
+assert.equal(multimodal.stream, true, 'model selection does not force a single-shot response');
 // 本地没有多模态模型时带图 fail closed
 visionReady = false;
 const beforeVision = starts;
@@ -170,3 +173,73 @@ console.log('PASS: readiness via registry, plain request unchanged, multimodal p
   session.close();reuseOn=false;
 }
 console.log('PASS: opt-in session reuse remains isolated by selected model');
+
+{
+  const session = new LocalChat('/files'), updates=[];
+  session.start([{role:'user',content:'test stream'}],u=>updates.push(u),'stream');
+  const id=nextId;
+  const emit=(content,finish_reason=null,usage)=>nativeEvents.push(JSON.stringify({event:'response',id:String(id),
+    payload:JSON.stringify({message:{content},finish_reason,usage})}));
+  emit('');consumeTick();assert.equal(updates.length,0,'empty chunks do not produce a first output');
+  emit('hello');consumeTick();assert.equal(session.activeCount(),1);
+  assert.deepEqual(updates.map(u=>u.kind),['delta'],'first text must not complete a stream');
+  assert.equal(updates[0].metrics.streaming,true);
+  emit(' world');consumeTick();assert.equal(session.activeCount(),1);
+  emit('','stop',{model_load_latency:12.5,prefill_latency:0,decode_latency:40,prompt_tokens:8,completion_tokens:2});consumeTick();
+  assert.deepEqual(updates.map(u=>u.kind),['delta','delta','done']);
+  assert.equal(updates.at(-1).text,'hello world');assert.equal(updates.at(-1).metrics.prefillMs,0);
+  assert.equal(updates.at(-1).metrics.modelLoadMs,12.5);assert.equal(updates.at(-1).metrics.completionTokens,2);
+  assert.equal(session.activeCount(),0);assert.equal(session.hasPendingNativeJobs(),true);
+  emit('late');consumeTick();assert.equal(updates.length,3,'late callback cannot overwrite completed output');
+  nativeEvents.push(JSON.stringify({event:'end',id:String(id),payload:'closed'}));consumeTick();
+  assert.equal(session.hasPendingNativeJobs(),false);session.close();
+}
+{
+  const session=new LocalChat('/files'),updates=[];
+  session.start([{role:'user',content:'nonstream'}],u=>updates.push(u),'single',{stream:false});
+  assert.equal(JSON.parse(lastRequest).stream,false);
+  nativeEvents.push(JSON.stringify({event:'response',id:String(nextId),payload:JSON.stringify({message:{content:'complete'},
+    usage:{model_load_latency:-1,prefill_latency:'bad',decode_latency:null,completion_tokens:1.5}})}));consumeTick();
+  assert.deepEqual(updates.map(u=>u.kind),['delta','done']);assert.equal(updates[0].metrics.streaming,false);
+  assert.equal(updates[1].metrics.modelLoadMs,undefined);assert.equal(updates[1].metrics.completionTokens,undefined);
+  session.close();
+}
+{
+  const session=new LocalChat('/files'),updates=[];
+  session.start([{role:'user',content:'interrupted'}],u=>updates.push(u),'interrupted');
+  nativeEvents.push(JSON.stringify({event:'response',id:String(nextId),payload:JSON.stringify({message:{content:'partial'},finish_reason:null})}));
+  nativeEvents.push(JSON.stringify({event:'end',id:String(nextId),payload:'closed'}));consumeTick();
+  assert.ok(updates.at(-1).error,'native cleanup without a finish marker is an interrupted stream');session.close();
+}
+console.log('PASS: streaming terminal detection, empty/late chunks, usage and explicit single-shot fallback');
+{
+  const session=new LocalChat('/files'),updates=[];clockOverride=50000;
+  session.start([{role:'user',content:'batched callbacks'}],u=>updates.push(u),'batched');
+  const id=nextId;clockOverride=50100;
+  for(const [elapsedMs,content,finish_reason]of [[50,'first',null],[75,' last','stop']]){
+    nativeEvents.push(JSON.stringify({event:'response',id:String(id),elapsedMs,
+      payload:JSON.stringify({message:{content},finish_reason})}));
+  }
+  consumeTick();
+  assert.equal(updates[0].outputAt,50050);assert.equal(updates[1].outputAt,50075);
+  assert.equal(updates.at(-1).metrics.firstOutputMs,50);assert.equal(updates.at(-1).metrics.lastOutputMs,75);
+  assert.equal(updates.at(-1).metrics.outputChunks,2,'one JS poll keeps the original output chunk count');
+  assert.equal(updates.at(-1).text,'first last');session.close();clockOverride=undefined;
+}
+console.log('PASS: native callback time and chunk count survive a batched JS poll');
+{
+  const session=new LocalChat('/files'),updates=[];outputPreference=true;
+  session.start([{role:'user',content:'first'}],u=>updates.push(u),'before-setting');const firstId=nextId;
+  outputPreference=false;
+  session.start([{role:'user',content:'second'}],()=>{},'after-setting');
+  assert.equal(JSON.parse(lastRequest).stream,false,'next request reads the saved preference');
+  nativeEvents.push(JSON.stringify({event:'response',id:String(firstId),payload:JSON.stringify({message:{content:'partial'},finish_reason:null})}));
+  consumeTick();assert.equal(updates.length,1);assert.equal(updates[0].metrics.streaming,true);
+  assert.equal(session.activeCount(),2,'saving non-streaming does not terminate an active stream');
+  const reopened=new LocalChat('/files');reopened.start([{role:'user',content:'reopened'}],()=>{},'reopened');
+  assert.equal(JSON.parse(lastRequest).stream,false,'a new engine instance uses the saved preference');
+  reopened.start([{role:'user',content:'override'}],()=>{},'override',{stream:true});
+  assert.equal(JSON.parse(lastRequest).stream,true,'an explicit internal request option takes precedence');
+  session.close();reopened.close();outputPreference=true;
+}
+console.log('PASS: output preference applies to new requests without changing active streams');

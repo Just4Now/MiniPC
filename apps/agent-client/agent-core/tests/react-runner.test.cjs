@@ -526,8 +526,10 @@ test('standalone live request excludes stale history while referenced follow-up 
   assert.ok(weather.prompts.every(p=>!p.includes('先前结果42')));
   assert.ok(weather.contexts.every(context=>context===undefined));
   const follow=await run('使用calculator把上面的数字乘3',['Action: calculator[{"expression":"42*3"}]','Final: 42乘3等于126'],{calculator:'计算结果：126'},{conversation});
-  assert.ok(follow.prompts.every(p=>p.includes('先前结果42')));assert.match(follow.final,/126/);
-  assert.ok(follow.contexts.every(context=>context===conversation));
+  assert.match(follow.prompts[0],/先前结果42/);assert.match(follow.final,/126/);
+  assert.ok(follow.prompts.slice(1).every(p=>!p.includes('先前结果42')),'current evidence replaces stale assistant facts during synthesis');
+  assert.equal(follow.contexts[0],conversation);
+  assert.ok(follow.contexts.slice(1).every(context=>context===undefined));
 });
 test('model interruption after successful tools preserves real results and unresolved items', async () => {
   const r=await run(deviceTask,[deviceActions[0],new Error('链路中断')],deviceOutputs);

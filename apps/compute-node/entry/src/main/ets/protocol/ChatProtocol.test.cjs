@@ -17,6 +17,19 @@ const context = { exports: {}, Uint8Array, Date: { now: () => now }, require: na
 } };
 vm.runInNewContext(transpile(__dirname + '/ChatProtocol.ets'), context);
 const { encodeMessage, MessageAssembler, validMessage, MAX_IMAGE_BASE64 } = context.exports;
+{
+  const agent={exports:{},require:context.require};
+  vm.runInNewContext(transpile(__dirname+'/../../../../../../agent-client/entry/src/main/ets/protocol/ChatProtocol.ets'),agent);
+  const delta={protocol:'nearby-chat-v1',type:'delta',requestId:'metrics',text:'x'};
+  assert(validMessage(delta),'legacy messages do not require telemetry');
+  assert(validMessage({...delta,metrics:{streaming:true,modelLoadMs:0,prefillMs:1.5,completionTokens:2,outputChunks:2,firstOutputMs:1,lastOutputMs:9}}));
+  assert(agent.exports.validMessage({...delta,metrics:{streaming:true,prefillMs:1.5}}));
+  for(const metrics of [null,{}, {streaming:'yes'},{streaming:true,prefillMs:-1},
+    {streaming:true,decodeMs:Infinity},{streaming:true,promptTokens:1.5},{streaming:true,outputChunks:-1},
+    {streaming:true,firstOutputMs:NaN},{streaming:true,lastOutputMs:-1}]) {
+    assert(!validMessage({...delta,metrics}),'reject malformed optional telemetry');
+  }
+}
 const request = { type: 'request', requestId: 'r', needs: [], messages: [{ role: 'user', content: '中文😀'.repeat(400) }] };
 const frames = encodeMessage(request, 'message_1');
 assert(frames.length > 1);

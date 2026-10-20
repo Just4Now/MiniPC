@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.jiuwen.registrychatui",
     "vendor": "Jiuwen",
-    "versionCode": 1000103,
-    "versionName": "1.2.32",
+    "versionCode": 1000108,
+    "versionName": "1.2.37",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }

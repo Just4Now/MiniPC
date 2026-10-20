@@ -11,6 +11,7 @@ export interface TaskEvidence {
   tool: string;
   status: string;
   output: string;
+  input?: string;
   facts?: string;
   source?: 'tool' | 'worker';
   goalIds?: string[];

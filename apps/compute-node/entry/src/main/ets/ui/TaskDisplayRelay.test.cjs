@@ -45,6 +45,20 @@ async function scenario(sender) {
 }
 
 (async () => {
+  // A single Agent task also follows its model calls to the actual worker.
+  const singleHub=new TaskBoard(),singleWorker=new TaskBoard();
+  const singleRelay=new TaskDisplayRelay(async message=>{
+    assert(proto.validTaskSnapshot(message.task));
+    singleWorker.accept(JSON.parse(JSON.stringify(message.task)),9,'聊天设备1',D1);return true;
+  });
+  const request={};singleRelay.bind('4:one','main',request,9);
+  const single={id:'one',title:'原始用户请求',input:'完整原始输入',revision:1,phase:'running',startedAt:t0,endedAt:0,answer:'',subtasks:[]};
+  singleHub.accept(single,4,'聊天设备1',D1);singleRelay.publish(singleHub.views(),[9],['4:one']);await sleep(10);
+  assert.equal(singleWorker.views()[0].phase,'running');assert.equal(singleWorker.views()[0].id,request.taskId);
+  singleHub.accept({...single,revision:2,phase:'done',endedAt:t0+50,answer:'调用工具后的最终答案',activity:'工具输入与返回内容'},4,'聊天设备1',D1);
+  singleRelay.publish(singleHub.views(),[9],['4:one']);await sleep(10);
+  assert.equal(singleWorker.views()[0].answer,'调用工具后的最终答案');assert.equal(singleWorker.views()[0].input,single.input);
+  assert.equal(singleWorker.views()[0].activity,'工具输入与返回内容');assert.equal(singleWorker.views()[0].phase,'done');
   // Healthy path.
   let r = await scenario(async () => true);
   assert.equal(r.worker.views()[0].phase, 'done');

@@ -38,6 +38,7 @@ import { getLocalLlmBinding } from '../llm/LocalLlmBinding';
 import { nearbyChannel } from '../nearby/LinkEnhanceChannel';
 import { inferenceClient, INFERENCE_STOPPED } from '../model/InferenceClient';
 import { TaskChildSnapshot, TaskSnapshot } from '../protocol/ChatProtocol';
+import { TaskReporter } from '../model/TaskReporter';
 import { RemoteComputeModel } from '../model/RemoteComputeModel';
 import { ChatMode, loadChatMode, saveChatMode } from '../model/ChatModeStore';
 import { buildPlainChatPrompt } from '../model/PlainChat';
@@ -55,12 +56,10 @@ const LIVE_COMPOSING = '正在整理工具结果…';
 
 /**
  * 算力端请求阶段 → 直播气泡文案（见 InferHooks.onPhase）。
- * 覆盖"加载权重 / prefill"那段静默：真机实测文本路径首字要等约 30s，
- * 期间只显示「正在生成…」的话，用户分不清是在加载还是卡住了。
+ * 加载权重与生成使用同一句，避免直播气泡在「正在加载模型」和「正在生成」之间切换。
  */
 function remotePhaseText(state: string): string {
   if (state === 'queued') { return '排队中…'; }
-  if (state === 'loading') { return '正在加载模型…'; }
   if (state === 'prefill') { return '正在理解问题…'; }
   return LIVE_PLACEHOLDER;
 }
@@ -295,6 +294,7 @@ struct Index {
   private processId: number = -1;
   private activeRunner: ReActAgentRunner | null = null;
   private activeParallel: ParallelTaskRunner | null = null;
+  private activeTaskReporter: TaskReporter | null = null;
   private parallelHeader: string = '';
   private parallelViews: SubtaskView[] = [];
   private stopRequested: boolean = false;
@@ -332,6 +332,8 @@ struct Index {
     this.activeRunner?.requestStop();
     this.activeRunner = null;
     this.activeParallel?.requestStop();
+    this.activeTaskReporter?.finish('cancelled');
+    this.activeTaskReporter = null;
     this.activeParallel = null;
     inferenceClient.setLinkListener(null);
     this.dropLivePlaceholder();
@@ -1283,7 +1285,9 @@ struct Index {
     this.setCollaborationKeepScreenOn(true);
     let finalAnswer: string | null = null;
     let finalPartial = false;
+    let failureText = '';
     const startedAt = Date.now();
+    let reporter: TaskReporter | null = null;
     try {
       const ready = await this.ensureRemoteReady(generation);
       if (!this.isCurrentRemoteRun(generation)) { return; }
@@ -1302,11 +1306,15 @@ struct Index {
         this.appendLine('Error', negotiate, BubbleKind.ERROR);
         return;
       }
+      reporter = new TaskReporter('t' + startedAt.toString(36) + '_' + generation.toString(36) + '_' +
+        Math.floor(Math.random() * 1679616).toString(36), task, startedAt,
+        (snapshot: TaskSnapshot): void => inferenceClient.publishTask(snapshot));
+      this.activeTaskReporter = reporter;
       this.appendUserMessage(display, imagePath);
       if (!useAgent) {
         const prompt = buildPlainChatPrompt(task, inferenceClient.promptBudgetBytes());
         const answer = await inferenceClient.complete(prompt, {
-          label: '普通聊天',
+          label: '普通聊天', taskId: reporter.id, subtaskId: 'main',
           onPhase: (state: string): void => {
             if (this.isCurrentRemoteRun(generation)) { this.setLivePhase(remotePhaseText(state)); }
           },
@@ -1343,6 +1351,7 @@ struct Index {
       // Hooks belong to this run's model only, so a superseded run can never
       // drive the next run's placeholder.
       const model = new RemoteComputeModel({
+        taskId: reporter.id, subtaskId: 'main',
         onStart: (): void => {
           if (!this.isCurrentRemoteRun(generation)) { return; }
           this.beginLiveReply();
@@ -1372,6 +1381,9 @@ struct Index {
         if (!this.isCurrentRemoteRun(generation)) { return; }
         if (event.kind === AgentEventKind.ACTION || event.kind === AgentEventKind.OBSERVATION ||
           event.kind === AgentEventKind.SKILL || event.kind === AgentEventKind.THOUGHT) {
+          if (event.kind === AgentEventKind.ACTION || event.kind === AgentEventKind.OBSERVATION) {
+            reporter?.record(event.kind, event.text, event.toolName, event.input);
+          }
           this.appendProcess(event);
           if (event.kind === AgentEventKind.ACTION) {
             this.setLivePhase(LIVE_TOOL_PREFIX + (event.toolName ?? '工具') + '…');
@@ -1387,6 +1399,7 @@ struct Index {
           this.commitLiveAnswer(event.text);
           return;
         }
+        if (event.kind === AgentEventKind.ERROR) failureText = event.text;
         if (event.kind === AgentEventKind.ERROR && event.text === INFERENCE_STOPPED) {
           this.dropLivePlaceholder();
           if (this.liveReplyId < 0) {
@@ -1407,21 +1420,25 @@ struct Index {
       if (imagePayload.length === 0 && mode === 'agent_split') {
         const parallel = this.createParallelRunner(generation, tools, skillSnapshot);
         this.activeParallel = parallel;
-        handled = await parallel.tryRun(task, conversation, this.parallelObserver(generation), listener);
+        handled = await parallel.tryRun(task, conversation, this.parallelObserver(generation, reporter), listener, startedAt + 300000, reporter.id);
       }
       if (!handled && this.isCurrentRemoteRun(generation)) {
         this.parallelHeader = '';
         this.parallelViews = [];
         this.setLivePhase(LIVE_PLACEHOLDER);
-        await runner.run(task, listener, conversation);
+        await runner.run(task, listener, conversation, { namespace: '', goals: [], evidence: [], deadlineAt: startedAt + 300000 });
       }
     } catch (error) {
       if (this.isCurrentRemoteRun(generation)) {
         this.dropLivePlaceholder();
         const message = error instanceof Error ? error.message : '远程推理失败';
+        failureText = message;
         this.appendLine('Error', message, BubbleKind.ERROR);
       }
     } finally {
+      reporter?.finish(this.isCurrentRemoteRun(generation) ?
+        (finalAnswer !== null ? (finalPartial ? 'partial' : 'done') : 'failed') : 'cancelled', finalAnswer ?? failureText);
+      if (this.activeTaskReporter === reporter) this.activeTaskReporter = null;
       // A disposed or superseded run must not clear the next run's listeners
       // or persist a late answer. Stop invalidates the generation immediately.
       if (this.pageActive && generation === this.remoteRunGeneration) {
@@ -1481,14 +1498,14 @@ struct Index {
   }
 
   /** Sub-task rows live in the placeholder bubble until the merged answer replaces it. */
-  private parallelObserver(generation: number): ParallelObserver {
+  private parallelObserver(generation: number, reporter?: TaskReporter): ParallelObserver {
     const observer: ParallelObserver = {
       onTask: (task: ParallelTaskSnapshot): void => {
         if (!this.isCurrentRemoteRun(generation) && task.phase !== 'cancelled') { return; }
         const subtasks: TaskChildSnapshot[] = [];
         for (const child of task.subtasks) {
           const copy: TaskChildSnapshot = {
-            id: child.id, title: child.title, device: child.device, phase: child.phase,
+            id: child.id, title: child.title, input: child.input, activity: child.activity, device: child.device, phase: child.phase,
             detail: child.detail, result: child.result, resultTruncated: child.resultTruncated,
             startedAt: child.startedAt, endedAt: child.endedAt
           };
@@ -1496,9 +1513,10 @@ struct Index {
         }
         const snapshot: TaskSnapshot = {
           id: task.id, title: task.title, phase: task.phase, revision: task.revision,
-          startedAt: task.startedAt, endedAt: task.endedAt, answer: task.answer, subtasks: subtasks
+          startedAt: task.startedAt, endedAt: task.endedAt, answer: task.answer, answerTruncated: task.answerTruncated, subtasks: subtasks
         };
-        inferenceClient.publishTask(snapshot);
+        if (reporter !== undefined) reporter.update(snapshot);
+        else inferenceClient.publishTask(snapshot);
       },
       onPhase: (text: string): void => {
         if (!this.isCurrentRemoteRun(generation)) { return; }
@@ -1547,6 +1565,8 @@ struct Index {
     this.activeRunner?.requestStop();
     this.activeRunner = null;
     this.activeParallel?.requestStop();
+    this.activeTaskReporter?.finish('cancelled');
+    this.activeTaskReporter = null;
     this.activeParallel = null;
     inferenceClient.cancelActive();
     this.dropLivePlaceholder();

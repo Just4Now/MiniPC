@@ -1,5 +1,5 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ChatMessage, ClusterInfo, WireMessage } from '../protocol/ChatProtocol';
+import { ChatMessage, ClusterInfo, WireMessage, InferenceMetrics } from '../protocol/ChatProtocol';
 import { ComputeRouter, DispatchEntry } from '../cluster/ComputeRouter';
 import { PoolNode, clusterLoad, meetsCapabilities, pickAvailableFor } from '../cluster/DevicePool';
 import { stableSystem, taskHead } from './SessionReuse';
@@ -17,6 +17,8 @@ export interface RelayLocal {
 
 /** Task-card observers for requests that run on another device. */
 export class RelayEvents {
+  metrics: (requestId: string, chatEpoch: number, metrics: InferenceMetrics) => void =
+    (_requestId: string, _chatEpoch: number, _metrics: InferenceMetrics): void => {};
   begin: (requestId: string, chatEpoch: number, workerEpoch: number, messages: ChatMessage[], label: string) => void =
     (_requestId: string, _chatEpoch: number, _workerEpoch: number, _messages: ChatMessage[], _label: string): void => {};
   delta: (requestId: string, chatEpoch: number, answer: string) => void =
@@ -96,7 +98,8 @@ export class InferenceRelay {
   }
 
   load(): ClusterInfo {
-    const load = clusterLoad(this.nodes());
+    // This profile feeds the chat client's text-Agent splitter, not a device inventory.
+    const load = clusterLoad(this.nodes().filter((node: PoolNode): boolean => meetsCapabilities(node, ['text'])));
     return { idle: load.idle, total: load.total };
   }
 
@@ -121,6 +124,9 @@ export class InferenceRelay {
       return;
     }
     const origin = entry.originRequestId;
+    if (message.metrics !== undefined) {
+      try { this.events.metrics(origin, entry.originEpoch, message.metrics); } catch (_) { /* display only */ }
+    }
     if (message.type === 'infer.accepted') {
       entry.accepted = true;
       this.toChat({ type: 'infer.accepted', version: 2, requestId: origin, state: message.state,
@@ -134,7 +140,8 @@ export class InferenceRelay {
     if (message.type === 'infer.delta') {
       const text = message.text || '';
       entry.answer += text;
-      this.toChat({ type: 'infer.delta', version: 2, requestId: origin, seq: message.seq, text: text }, entry);
+      this.toChat({ type: 'infer.delta', version: 2, requestId: origin, seq: message.seq, text: text,
+        metrics: message.metrics }, entry);
       this.events.delta(origin, entry.originEpoch, entry.answer);
       return;
     }
@@ -142,7 +149,7 @@ export class InferenceRelay {
       this.router.finishForward(forwardId);
       this.sendToChat({ type: 'infer.done', version: 2, requestId: origin, lastSeq: message.lastSeq,
         outputUtf8Bytes: message.outputUtf8Bytes, outputSha256: message.outputSha256,
-        finishReason: message.finishReason, source: message.source }, entry.originEpoch, null);
+        finishReason: message.finishReason, source: message.source, metrics: message.metrics }, entry.originEpoch, null);
       this.events.end(origin, entry.originEpoch, entry.answer, false);
       this.publishLoad();
       return;

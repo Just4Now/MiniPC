@@ -32,6 +32,7 @@ function harness(initial, options = {}) {
   const handlers = new RelayEvents();
   handlers.begin = (id, chat, worker) => events.push(['begin', id, chat, worker]);
   handlers.delta = (id, chat, text) => events.push(['delta', id, chat, text]);
+  handlers.metrics = (id, chat, metrics) => events.push(['metrics', id, chat, metrics]);
   handlers.end = (id, chat, text, failed) => events.push(['end', id, chat, text, failed]);
   if(options.forward)handlers.forward=options.forward;
   // Like Index.poolNodes(): a worker's in-flight count comes from the hub's own hand-off ledger.
@@ -55,6 +56,19 @@ const worker = (extra) => node({ epoch: 7, label: '算力设备2', ready: true, 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test('Agent split capacity counts text-capable devices only, including model switches and busy nodes', () => {
+  const a = self({ capabilities: ['text'] });
+  const b = worker({ capabilities: ['vision'] });
+  const h = harness([a, b]);
+  assert.deepEqual(json(h.relay.load()), { idle: 1, total: 1 });
+  b.capabilities = ['text'];
+  assert.deepEqual(json(h.relay.load()), { idle: 2, total: 2 });
+  b.sampled = 1;
+  assert.deepEqual(json(h.relay.load()), { idle: 1, total: 2 });
+  a.capabilities = ['vision'];
+  assert.deepEqual(json(h.relay.load()), { idle: 0, total: 1 });
+});
 
 test('DevicePool: idle only, more memory first, hub wins ties, load counts ready nodes', () => {
   assert.equal(pool.pickIdle([]), null);
@@ -172,6 +186,42 @@ test('a text request is not handed to a vision-only node', () => {
   h.relay.handleFromChat(request('r1'), 5);
   assert.equal(h.to(7, 'infer.request').length, 0, 'vision-only worker is not chosen for text');
 });
+test('independent chat origins share a heterogeneous pool and reuse their own completed request while other work stays active',()=>{
+  // A vision-only hub leaves both text workers in the forwarding ledger.
+  // Client request IDs deliberately collide across chat origins.
+  const h=harness([self({capabilities:['vision']}),worker({epoch:7,capabilities:['text']}),worker({epoch:8,capabilities:['text']})]);
+  h.relay.handleFromChat(request('same-id'),5);
+  h.relay.handleFromChat(request('same-id'),6);
+  const first=h.to(7,'infer.request')[0],second=h.to(8,'infer.request')[0];
+  assert.ok(first);assert.ok(second);assert.notEqual(first.requestId,second.requestId);
+  assert.equal(h.localHandled.length,0);assert.equal(h.router.workerLoad(7,0),1);assert.equal(h.router.workerLoad(8,0),1);
+  assert.deepEqual(json(h.relay.load()),{idle:0,total:2});
+  h.relay.handleFromWorker({type:'infer.accepted',requestId:first.requestId,state:'generating'},7);
+  h.relay.handleFromWorker({type:'infer.accepted',requestId:second.requestId,state:'generating'},8);
+  h.relay.handleFromWorker({type:'infer.delta',requestId:first.requestId,seq:1,text:'first answer'},7);
+  h.relay.handleFromWorker({type:'infer.done',requestId:first.requestId,lastSeq:1},7);
+  assert.equal(h.to(5,'infer.done').length,1);assert.equal(h.to(6,'infer.done').length,0);
+  assert.equal(h.router.workerLoad(7,0),0);assert.equal(h.router.workerLoad(8,0),1);
+  const image='/9j/4AAQSkZJRg==';
+  h.relay.handleFromChat({...request('same-id'),image},5);
+  assert.deepEqual(h.localHandled,[['infer.request','same-id',5]],'the vision hub receives the new image request');
+  assert.equal(h.to(7,'infer.request').length,1);assert.equal(h.to(8,'infer.request').length,1,'image cannot enter either text worker');
+  h.relay.handleFromWorker({type:'infer.delta',requestId:second.requestId,seq:1,text:'second answer'},8);
+  h.relay.handleFromWorker({type:'infer.done',requestId:second.requestId,lastSeq:1},8);
+  assert.deepEqual(h.to(5,'infer.delta').map(m=>m.text),['first answer']);
+  assert.deepEqual(h.to(6,'infer.delta').map(m=>m.text),['second answer']);
+  assert.equal(h.to(6,'infer.done').length,1);assert.equal(h.router.workerLoad(8,0),0);
+});
+
+test('an idle vision worker accepts an image while two text devices are occupied',()=>{
+  const h=harness([self({capabilities:['text'],inflight:1}),worker({epoch:7,capabilities:['text'],sampled:1}),worker({epoch:8,capabilities:['vision']})]);
+  const image='/9j/4AAQSkZJRg==';
+  h.relay.handleFromChat({...request('image'),image},6);
+  assert.equal(h.localHandled.length,0);assert.equal(h.to(7,'infer.request').length,0);
+  assert.equal(h.to(8,'infer.request').length,1);assert.equal(h.to(8,'infer.request')[0].image,image);
+  assert.equal(h.to(6,'infer.error').length,0);
+});
+
 test('the idle hub still serves a vision request itself when it is capable', () => {
   const h = harness([self({ inflight: 0, capabilities: ['text', 'vision'] }), worker()]);
   h.relay.handleFromChat({ ...request('r1'), image: '/9j/4AAQSkZJRg==' }, 5);
@@ -431,6 +481,17 @@ test('relay uses the supplied speed table for placement and for re-issue', () =>
   r.relay.workerDropped(7);
   assert.equal(r.to(8, 'infer.request').length, 1, 're-issue goes to the faster remaining device, not the slower hub');
 });
+test('remote streaming mode and final engine telemetry survive forwarding and task observers',()=>{
+  const h=harness([self({ready:false}),worker()]);h.relay.handleFromChat(lightRequest('timed'),5);
+  const forward=h.to(7,'infer.request')[0];assert.ok(forward);
+  const first={streaming:true},last={streaming:true,prefillMs:123.4,completionTokens:10};
+  h.relay.handleFromWorker({type:'infer.delta',requestId:forward.requestId,seq:1,text:'output',metrics:first},7);
+  h.relay.handleFromWorker({type:'infer.done',requestId:forward.requestId,lastSeq:1,metrics:last},7);
+  assert.deepEqual(h.to(5,'infer.delta')[0].metrics,first);assert.deepEqual(h.to(5,'infer.done')[0].metrics,last);
+  assert.equal(h.events.filter(e=>e[0]==='metrics').length,2);
+  assert.deepEqual(json(h.events.filter(e=>e[0]==='metrics').at(-1)[3]),last);
+});
+
 (async () => {
   let pass = 0;
   for (const [name, fn] of tests) {

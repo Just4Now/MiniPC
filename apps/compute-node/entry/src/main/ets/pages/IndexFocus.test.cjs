@@ -49,6 +49,10 @@ function setup(isServer) {
     }
     if (name === '../nearby/NearbyConfig') return { IS_SERVER: !!isServer };
     if (name === '../llm/LocalChat') return { LocalChat: class {} };
+    if (name === '../llm/OutputSettings') return {
+      outputSettings:()=>({streaming:behavior.streaming!==false}),
+      saveOutputSettings:(_dir,settings)=>{if(behavior.outputSaveError)return behavior.outputSaveError;behavior.streaming=settings.streaming;return '';}
+    };
     if (name === '../llm/ModelRegistry') return {
       modelSelection: () => behavior.modelSelection || {model:''},
       readyModelDirs: () => ['7B','VL'],
@@ -634,7 +638,9 @@ function setup(isServer) {
   s.page.receiveInference({type:'infer.request',requestId:'child-call',prompt:'子任务输入',taskId:task.id,subtaskId:'s1'},7);
   board=s.events.filter(e=>e.kind==='dashboard').at(-1);
   assert.equal(board.jobs[0].groupKey,'7:display_parent');assert.equal(board.jobs[0].subtaskId,'s1');assert.equal(board.jobs[0].origin,'聊天设备2');
+  s.page.finishInferTask('child-call',7,'Action: search',false);
   s.page.clearFinishedJobs();assert.equal(s.page.taskBoard.views().length,1,'clearing history preserves running parent');
+  assert(s.page.finishedJobs.some(job=>job.id==='child-call'),'an active task keeps its returned model calls after history cleanup');
   s.page.taskBoard.disconnect(7);s.page.clearFinishedJobs();assert.equal(s.page.taskBoard.views().length,0);
   const worker=setup(true);worker.channel.selfComputeNumber=()=>2;worker.channel.selfLabel=()=> '算力设备2';
   worker.channel.peerInfos=()=>[{epoch:8,peerId:'hub',role:'compute',ready:true,name:'算力设备1'}];
@@ -642,6 +648,19 @@ function setup(isServer) {
   worker.page.receiveInference({type:'infer.request',requestId:'forwarded',prompt:'远端输入',taskId:task.id,subtaskId:'s2',origin:'聊天设备2'},8);
   assert.equal(worker.page.jobs[0].origin,'聊天设备2');assert.equal(worker.page.jobs[0].source,'算力设备2');
   console.log('PASS: native group ownership, chat role checks, request correlation, history cleanup and forwarded origin');
+}
+
+{
+  const s=setup(true);s.page.filesDir='/files';
+  s.page.jobs.push(s.page.createJob('active',[{role:'user',content:'active'}],false,0));
+  assert.equal(s.page.setOutputMode('complete'),'','a future-request preference is editable while inference runs');
+  assert.equal(s.page.modelSettings().streaming,false);
+  assert.ok(s.page.setOutputMode('invalid'));assert.equal(s.behavior.streaming,false);
+  s.behavior.outputSaveError='save failed';assert.equal(s.page.setOutputMode('stream'),'save failed');
+  assert.equal(s.page.modelSettings().streaming,false);
+  s.behavior.outputSaveError='';assert.equal(s.page.setOutputMode('stream'),'');
+  assert.equal(s.page.modelSettings().streaming,true);
+  console.log('PASS: output setting validates, persists and changes independently of active inference');
 }
 
 // Model changes must not race active native requests or cleanup.
@@ -703,7 +722,7 @@ function setup(isServer) {
   s.page.finishInferTask('merge',7,'汇总回答',false);
   board=s.events.filter(e=>e.kind==='dashboard').at(-1);
   assert.equal(board.groups[0].phase,'done');assert.equal(board.groups[0].answer,'汇总回答');
-  window.onNativeEvent(board);assert(elements.history.innerHTML.includes('子任务 2/2'));
+  window.onNativeEvent(board);assert(elements.history.innerHTML.includes('模型B'));assert(elements.history.innerHTML.includes('汇总回答'));
   s.page.clearFinishedJobs();assert.equal(s.events.filter(e=>e.kind==='dashboard').at(-1).groups.length,0);
   console.log('PASS: unchanged chat request replay -> native split observation -> real HTML grouping and result return, full input isolated from list');
 }
@@ -749,11 +768,11 @@ function setup(isServer) {
   window.onNativeEvent(board);
   assert(elements.history.innerHTML.includes('分别查询车票和天气'));
   assert(elements.history.innerHTML.includes('class="task-children"'));
-  assert.equal((elements.history.innerHTML.match(/data-child="s2"/g)||[]).length,1);
+  assert.equal((elements.history.innerHTML.match(/data-result="s2"/g)||[]).length,1);
   assert(!elements.history.innerHTML.includes('车票查询'),'a worker only lists its own child assignments');
   assert(!elements.history.innerHTML.includes('data-detail="'),'individual calls do not become duplicate task rows');
   assert(!elements.history.innerHTML.includes('PRIVATE_CONTROLLER'));
-  assert(elements.history.innerHTML.includes('group-progress'));
+  assert(elements.history.innerHTML.includes('推理详情'));
   const untrusted={type:'infer.task',requestId:'fake',task:{...board.groups[0],id:'fake',title:'其他算力伪装的结构'},origin:'聊天设备4'};
   worker.page.receiveInference(untrusted,12);assert.equal(worker.page.taskBoard.views().length,1);
   console.log('PASS: unchanged chat -> hub split -> worker snapshots and stable child IDs -> real worker HTML hierarchy, own assignments only');
@@ -920,6 +939,21 @@ function setup(isServer) {
   assert.equal(worker.sent.filter(m => m.type === 'request').length, 0, 'a worker without scheduling rights answers locally instead of erroring');
   assert.equal(localStarts, 1);
   console.log('PASS: a non-hub worker answers heavy questions locally instead of refusing on tier');
+}
+
+// 算力端↔算力端 roster 同步后的空 deviceInfo 轮询帧必须带 capabilities 字段：
+{
+  const h=setup(true),job=h.page.createJob('timing',[{role:'user',content:'timing'}],false,0);
+  h.page.jobs.push(job);
+  h.page.localUpdate(job.key,{kind:'delta',text:'',metrics:{streaming:true}});
+  assert.equal(job.firstAt,0,'an empty chunk never starts the first-output clock');
+  job.startedAt=Date.now()-1000;const capturedAt=job.startedAt+250;
+  h.page.localUpdate(job.key,{kind:'delta',text:'answer',metrics:{streaming:true},outputAt:capturedAt});
+  assert.equal(job.firstAt,capturedAt,'use callback time rather than the JS poll time');const first=job.firstAt;
+  h.page.localUpdate(job.key,{kind:'done',text:'answer',finishReason:'stop',metrics:{streaming:true,prefillMs:25,completionTokens:1}});
+  const view=h.page.toJobView(h.page.finishedJobs[0],Date.now());
+  assert.equal(view.firstAt,first);assert.equal(view.metrics.prefillMs,25);assert.equal(view.running,false);
+  console.log('PASS: observed first output skips empty chunks and final engine metrics survive the dashboard');
 }
 
 // 算力端↔算力端 roster 同步后的空 deviceInfo 轮询帧必须带 capabilities 字段：

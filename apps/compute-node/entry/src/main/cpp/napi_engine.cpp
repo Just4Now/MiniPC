@@ -1,6 +1,5 @@
 #include <napi/native_api.h>
 #include "vl_runtime.h"
-#include "vl_worker_client.h"
 
 namespace {
 void Run(std::string modelDir, std::string imagePath, std::string prompt, uintptr_t generation)
@@ -20,23 +19,8 @@ void Run(std::string modelDir, std::string imagePath, std::string prompt, uintpt
         }
     }
 
-    const vlworker::Result remote = vlworker::Infer("/data/storage/el2/base/cache", modelDir,
-        imagePath, prompt, [&s](const char* text) { OnToken(&s, text); }, [&s, generation] {
-            std::lock_guard<std::mutex> lock(s.mutex);
-            return s.cancelled || !s.active || s.generation != generation;
-        });
-    if (remote.handled) {
-        std::lock_guard<std::mutex> lock(s.mutex);
-        if (s.active && s.generation == generation) {
-            if (!remote.error.empty()) EventLocked(s, "error", remote.error);
-            EventLocked(s, "end", remote.finishReason);
-            s.active = false;
-            s.started = false;
-        }
-        s.wake.notify_all();
-        return;
-    }
-
+    // VL runs in the HAP process. Device access is configured separately by
+    // the administrator; an old worker marker must never change this route.
     std::string failure;
     if (!EnsureEngine(s, modelDir, failure)) {
         std::lock_guard<std::mutex> lock(s.mutex);
@@ -74,7 +58,8 @@ void Run(std::string modelDir, std::string imagePath, std::string prompt, uintpt
             // 上层不会显示"已停止生成"；用户主动取消仍是 cancelled。
             EventLocked(s, "end", s.repetitionCut ? "stop" : "cancelled");
         } else if (rc != QWEN2VL_OK) {
-            EventLocked(s, "error", qwen2vl_last_error(e));
+            const std::string accessFailure = DriverAccessFailure();
+            EventLocked(s, "error", accessFailure.empty() ? qwen2vl_last_error(e) : accessFailure);
             EventLocked(s, "end", "error");
         } else {
             EventLocked(s, "end", "stop");
@@ -192,7 +177,6 @@ napi_value Release(napi_env env, napi_callback_info info)
         s.engineFailed = false;
         s.engineFailure.clear();
     }
-    vlworker::Release("/data/storage/el2/base/cache");
     if (e != nullptr) {
         qwen2vl_destroy(e);
     }

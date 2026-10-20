@@ -51,6 +51,16 @@ int main() {
     auto start = [&] { return Begin(root.string(), "{}", (root / "events.jsonl").string()); };
     for (int i = 0; i < 20; ++i) { assert(start()); WaitDone(); }
     assert(creates == 20 && submits == 20 && destroys == 20);
+    {
+      std::lock_guard<std::mutex> lock(State().mutex);
+      int timedResponses=0;
+      for (const auto& event : State().events) {
+        if (event.find("\"event\":\"response\"") == std::string::npos) continue;
+        assert(event.find("\"elapsedMs\":") != std::string::npos);
+        ++timedResponses;
+      }
+      assert(timedResponses==20);
+    }
     auto oldContext = savedContext;
     mode = 3; holdCreate = true; inCreate = false;
     assert(start()); assert(start()); assert(start());

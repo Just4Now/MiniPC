@@ -37,6 +37,7 @@ function fixture(options = {}) {
     return options.failAt === id ? 0 : id;
   }, cancel(id) {cancels.push(id);}, complete() {}, takeEvents() {return events.splice(0);}, closeSession() {}};
   const {LocalChat} = load('LocalChat.ets', {
+    './OutputSettings': {outputSettings:()=>({streaming:options.streaming!==false})},
     ...logger, './ModelRegistry': registry, '../cluster/TaskRules': taskRules, './Utf8Repair': repair, './SessionReuse': reuse, 'libgewu_probe.so': {default: native},
     '@kit.CoreFileKit': {fileIo: {OpenMode: {READ_ONLY: 0}, accessSync: () => false,
       openSync: () => ({fd: 1}), readSync: () => 1, closeSync() {}}}
@@ -168,11 +169,12 @@ test('full answer returns immediately without native end; cleanup cannot duplica
   h.response(h.starts[1].id,'第二个答案');h.poll();assert.equal(h.messages(8,'b','infer.done').length,1);
   h.end(h.starts[1].id);h.poll();assert.equal(h.model.jobs.length,0);
 });
-test('single-shot answer without explicit finish_reason also completes before cleanup',()=>{
+test('a streaming response without a finish marker must not be treated as a full answer',()=>{
   const h=fixture();h.host.handle(request('a'),7);
   h.emit(h.starts[0].id,'response',JSON.stringify({message:{content:'完整答案'}}));h.poll();
-  assert.equal(h.messages(7,'a','infer.done').length,1);assert.equal(h.host.activeCount(),0);
-  h.end(h.starts[0].id);h.poll();assert.equal(h.messages(7,'a','infer.done').length,1);
+  assert.equal(h.messages(7,'a','infer.done').length,0);assert.equal(h.host.activeCount(),1);
+  h.end(h.starts[0].id);h.poll();assert.equal(h.messages(7,'a','infer.done').length,0);
+  assert.equal(h.messages(7,'a','infer.error').length,1);
 });
 test('task-card exceptions cannot prevent native start or final delivery',()=>{
   for(const phase of ['begin','delta','end']){
@@ -221,6 +223,19 @@ test('cancelling a reused local handle skips the old request awaiting cleanup',(
   h.end(h.starts[0].id);h.end(h.starts[1].id);h.poll();
   assert.equal(updates.filter(u=>u.kind==='done').length,2);assert.equal(updates.at(-1).finishReason,'cancelled');
 });
+test('stream stays active until an empty terminal frame; telemetry follows the completed request',()=>{
+  const h=fixture();h.host.handle(request('streamed'),7);const id=h.starts[0].id;
+  h.emit(id,'response',JSON.stringify({message:{content:'hello'},finish_reason:null}));
+  h.emit(id,'response',JSON.stringify({message:{content:' world'},finish_reason:null}));h.poll();
+  assert.equal(h.host.activeCount(),1);assert.equal(h.messages(7,'streamed','infer.done').length,0);
+  assert.equal(h.messages(7,'streamed','infer.delta')[0].metrics.streaming,true);
+  h.emit(id,'response',JSON.stringify({message:{content:''},finish_reason:'stop',usage:{prefill_latency:35,completion_tokens:2}}));h.poll();
+  const done=h.messages(7,'streamed','infer.done')[0];assert.equal(done.metrics.prefillMs,35);
+  assert.equal(done.metrics.completionTokens,2);assert.equal(h.host.activeCount(),0);
+  assert.equal(done.metrics.outputChunks,2);
+  assert.equal(h.messages(7,'streamed','infer.delta').map(m=>m.text).join(''),'hello world');
+});
+
 (async () => {
   let passed = 0;
   for (const [name, body] of tests) {

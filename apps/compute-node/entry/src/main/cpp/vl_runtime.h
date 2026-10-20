@@ -154,8 +154,10 @@ std::string DriverAccessFailure()
     // This SDK's KNPU allocator opens these nodes in the calling process.
     // Probe from that same worker after a failed load, rather than inferring
     // application access from root-shell tests or file mode bits.
-    for (const char* path : {"/dev/dma_heap/system_heap", "/dev/npu0"}) {
-        const int fd = open(path, O_RDWR | O_CLOEXEC);
+    for (const char* path : {"/dev/dma_heap/system_heap", "/dev/dma_heap/npu_device_hugepage_heap",
+                             "/dev/npu0", "/dev/npu_manager"}) {
+        const int flags = strcmp(path, "/dev/npu_manager") == 0 ? O_RDONLY : O_RDWR;
+        const int fd = open(path, flags | O_CLOEXEC);
         if (fd >= 0) {
             close(fd);
             continue;

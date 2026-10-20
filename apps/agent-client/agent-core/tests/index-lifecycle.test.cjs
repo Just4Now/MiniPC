@@ -8,6 +8,9 @@ for (const p of [process.env.TYPESCRIPT_PATH, 'typescript', 'D:/command-line-too
   try { ts = require(p); break; } catch {}
 }
 if (!ts) throw new Error('Set TYPESCRIPT_PATH to the local compiler module');
+const {transpile}=require('../../../../tests/ets-harness.cjs');
+const reporterBox={exports:{},require:name=>name==='./InferenceWire'?{utf8Bytes:s=>Buffer.from(s)}:{},Date,Math,JSON};
+vm.runInNewContext(transpile(path.resolve(__dirname,'../../entry/src/main/ets/model/TaskReporter.ets')),reporterBox);
 const source = fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/pages/Index.ets'), 'utf8').replace(/\r\n?/g, '\n');
 const names = ['aboutToAppear','aboutToDisappear','ensureRemoteReady','isCurrentRemoteRun','runRemoteAgent','stopGeneration','changeChatMode','changeAgentMode'];
 function method(name) {
@@ -28,11 +31,11 @@ function deferred() { let resolve, reject; const promise = new Promise((a,b)=>{r
 async function drain() { for(let i=0;i<12;i++) await Promise.resolve(); }
 function harness(options={}) {
   const records={construct:0,runs:0,stops:0,commits:[],saved:0,lines:[],events:[],setup:[],reset:0,hooks:[],phases:[],plain:[],settings:[],skills:0,registries:0};
-  const client={ensureReady:()=>options.negotiate?.promise??Promise.resolve(''),promptBudgetBytes:()=>32768,cancelActive(){records.setup.push('cancel');},reset(){records.reset++;},bind(){},setLinkListener(fn){this.link=fn;}};
+  const client={publishTask(snapshot){(records.tasks??=[]).push(snapshot)},ensureReady:()=>options.negotiate?.promise??Promise.resolve(''),promptBudgetBytes:()=>32768,cancelActive(){records.setup.push('cancel');},reset(){records.reset++;},bind(){},setLinkListener(fn){this.link=fn;}};
   client.complete=async(prompt,hooks,split,image)=>{records.plain.push(prompt);records.plainImage=image;records.hooks.push(hooks);hooks.onStart?.();if(options.plain) return options.plain.promise;hooks.onDelta?.('普通');return '普通回答';};
   const channel={initialize(){},resume(){},isConnected:()=>true,inferenceReady:()=>true,disconnect(){records.setup.push('disconnect');},prepare:()=>Promise.resolve(),computeDevices:()=>Promise.resolve()};
   class Runner {constructor(){records.construct++;} requestStop(){records.stops++;} async run(task,listener){records.runs++; records.listener=listener; if(options.runner) await options.runner.promise; listener({kind:'FINAL',text:task+' answer',status:options.finalStatus}); if(options.duplicateFinal) listener({kind:'FINAL',text:'duplicate'});}}
-  const sandbox={exports:{},MAX_STEPS:10,INFERENCE_STOPPED:'已停止生成',BubbleKind:{ERROR:1,LOOP:2},AgentEventKind:{ACTION:'ACTION',OBSERVATION:'OBSERVATION',SKILL:'SKILL',THOUGHT:'THOUGHT',FINAL:'FINAL',ERROR:'ERROR'},PARTIAL_FINAL_STATUS:'partial',PARTIAL_HISTORY_NOTE:'（上一轮未得到完整回答）',LIVE_PLACEHOLDER:'正在生成…',LIVE_TOOL_PREFIX:'正在调用工具：',LIVE_COMPOSING:'正在整理工具结果…',inferenceClient:client,nearbyChannel:channel,ReActAgentRunner:Runner,RemoteComputeModel:class {constructor(hooks){records.hooks.push(hooks);}setImage(image){records.images=(records.images||0)+1;if(options.image)assert.equal(image,options.image);}},saveConversation(){records.saved++;},createSkillSnapshot:()=>options.skill?.promise??Promise.resolve({}),createConfiguredLoopToolRegistry:()=>Promise.resolve({close:async()=>{}}),ensureBundledWorkspaceFiles:()=>Promise.resolve()};
+  const sandbox={exports:{},TaskReporter:reporterBox.exports.TaskReporter,MAX_STEPS:10,INFERENCE_STOPPED:'已停止生成',BubbleKind:{ERROR:1,LOOP:2},AgentEventKind:{ACTION:'ACTION',OBSERVATION:'OBSERVATION',SKILL:'SKILL',THOUGHT:'THOUGHT',FINAL:'FINAL',ERROR:'ERROR'},PARTIAL_FINAL_STATUS:'partial',PARTIAL_HISTORY_NOTE:'（上一轮未得到完整回答）',LIVE_PLACEHOLDER:'正在生成…',LIVE_TOOL_PREFIX:'正在调用工具：',LIVE_COMPOSING:'正在整理工具结果…',inferenceClient:client,nearbyChannel:channel,ReActAgentRunner:Runner,RemoteComputeModel:class {constructor(hooks){records.hooks.push(hooks);}setImage(image){records.images=(records.images||0)+1;if(options.image)assert.equal(image,options.image);}},saveConversation(){records.saved++;},createSkillSnapshot:()=>options.skill?.promise??Promise.resolve({}),createConfiguredLoopToolRegistry:()=>Promise.resolve({close:async()=>{}}),ensureBundledWorkspaceFiles:()=>Promise.resolve()};
   Object.assign(sandbox,{
     loadAgentEnabled:()=>options.storedAgent??false,
     saveAgentEnabled:async(_context,value)=>{records.settings.push(value);},
@@ -56,6 +59,9 @@ test('ordinary chat streams and saves once without constructing any Agent servic
  const h=harness({agentEnabled:false});h.p.skillSnapshot=null;h.p.toolRegistryPromise=null;h.p.toolRegistryIncludesSkills=false;
  await h.p.runRemoteAgent('task with attachment excerpt','shown','');
  assert.deepEqual(h.records.plain,['task with attachment excerpt']);assert.deepEqual(h.records.commits,['普通','普通回答']);
+ assert.equal(h.records.tasks[0].phase,'running');assert.equal(h.records.tasks.at(-1).phase,'done');
+ assert.equal(h.records.tasks.at(-1).input,'task with attachment excerpt');assert.equal(h.records.tasks.at(-1).answer,'普通回答');
+ assert.equal(h.records.hooks[0].taskId,h.records.tasks[0].id);
  assert.equal(h.records.construct,0);assert.equal(h.records.skills,0);assert.equal(h.records.registries,0);assert.equal(h.records.parallelTries,undefined);
  assert.equal(h.records.saved,1);assert.equal(h.p.sending,false);assert.deepEqual(h.p.conversation.turns,[['user','shown'],['assistant','普通回答']]);
 });

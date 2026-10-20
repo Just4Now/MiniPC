@@ -10,7 +10,7 @@ import { InferenceRelay, RelayEvents } from '../llm/InferenceRelay';
 import { PoolNode } from '../cluster/DevicePool';
 import { DeviceSpeed } from '../cluster/DeviceSpeed';
 import { nearbyChannel } from '../nearby/LinkEnhanceChannel';
-import { WireMessage, ChatMessage, ClusterInfo, DeviceInfoEntry } from '../protocol/ChatProtocol';
+import { WireMessage, ChatMessage, ClusterInfo, DeviceInfoEntry, InferenceMetrics } from '../protocol/ChatProtocol';
 import { IS_SERVER } from '../nearby/NearbyConfig';
 import { ComputeRouter, DispatchEntry, ScheduleNode, originKeyOf, pickNode, pickRoute } from '../cluster/ComputeRouter';
 import { classifyFromMessages } from '../cluster/TaskRules';
@@ -18,6 +18,7 @@ import { LocalLlmTransport } from '../llm/LlmTransport';
 import { VlLlmTransport } from '../llm/VlLlmTransport';
 import { QwenVlManager } from '../llm/QwenVlManager';
 import { isVlLayout, modelSelection, readyModelDirs, saveModelSelection } from '../llm/ModelRegistry';
+import { outputSettings, saveOutputSettings } from '../llm/OutputSettings';
 import { pickJpegDataUrl, jpegBase64Payload } from '../media/ImageAttach';
 import {
   DEVICE_INFO_POLL_MS, applyDeviceInfo, buildSelfEntry, deployedModelName,
@@ -85,7 +86,8 @@ struct Index {
       }
     }, () => { this.pickImage(); }, () => { this.clearFinishedJobs(); }, () => { this.pendingImage = ''; },
     (model: string): string => this.selectModel(model),
-    (): string => IS_SERVER && this.filesDir.length > 0 ? JSON.stringify(this.modelSettings()) : 'null');
+    (): string => IS_SERVER && this.filesDir.length > 0 ? JSON.stringify(this.modelSettings()) : 'null',
+    (mode: string): string => this.setOutputMode(mode));
   private channel = nearbyChannel;
   private connecting: boolean = false;
   private preparation: Promise<void> | null = null;
@@ -139,11 +141,14 @@ struct Index {
       this.filesDir = context.getApplicationContext().filesDir;
       this.model = new LocalChat(this.filesDir);
       const card = new InferCardHooks();
+      card.metrics = (requestId: string, epoch: number, metrics: InferenceMetrics): void => {
+        this.updateJobMetrics(requestId, epoch, metrics);
+      };
       card.begin = (requestId: string, epoch: number, prompt: string, label: string): void => {
         this.showInferTask(requestId, epoch, prompt, label);
       };
-      card.delta = (requestId: string, epoch: number, answer: string): void => {
-        this.updateInferTask(requestId, epoch, answer);
+      card.delta = (requestId: string, epoch: number, answer: string, outputAt?: number): void => {
+        this.updateInferTask(requestId, epoch, answer, outputAt);
       };
       card.end = (requestId: string, epoch: number, answer: string, failed: boolean): void => {
         this.finishInferTask(requestId, epoch, answer, failed);
@@ -154,6 +159,9 @@ struct Index {
       const host = this.inference;
       host.setDeviceProvider((): string => this.selfComputeLabel());
       const events = new RelayEvents();
+      events.metrics = (requestId: string, epoch: number, metrics: InferenceMetrics): void => {
+        this.updateJobMetrics(requestId, epoch, metrics);
+      };
       events.begin = (requestId: string, chatEpoch: number, workerEpoch: number, messages: ChatMessage[], label: string): void => {
         this.showRelayTask(requestId, chatEpoch, workerEpoch, messages, label);
       };
@@ -375,7 +383,7 @@ struct Index {
     const elapsed = (ended ? job.endedAt : now) - job.startedAt;
     return {
       groupKey: job.taskId !== undefined ? Index.jobKey(job.epoch, job.taskId) : undefined, subtaskId: job.subtaskId,
-      input: job.input,
+      input: job.input, metrics: job.metrics,
       id: job.id, key: job.key, source: job.source, origin: job.origin, local: !job.peer,
       image: job.image, question: job.question, answer: job.answer,
       chars: job.answer.length, startedAt: job.startedAt, firstAt: job.firstAt,
@@ -416,7 +424,7 @@ struct Index {
     const options = readyModelDirs(this.filesDir).map((dir: string): ModelChoiceView => {
       return { name: dir, vision: isVlLayout(this.filesDir + '/models/' + dir) };
     });
-    return { selected: selection.model, options: options,
+    return { selected: selection.model, options: options, streaming: outputSettings(this.filesDir).streaming,
       locked: this.modelSettingsLocked() };
   }
 
@@ -437,6 +445,15 @@ struct Index {
     this.rosterDeliveries.clear();
     this.emitDashboard();
     return '';
+  }
+
+  private setOutputMode(mode: string): string {
+    if (!IS_SERVER || this.filesDir.length === 0) return '模型服务尚未初始化。';
+    if (mode !== 'stream' && mode !== 'complete') return '请选择有效的输出方式。';
+    // Every request snapshots this preference on start; active requests retain their mode.
+    const error = saveOutputSettings(this.filesDir, { streaming: mode === 'stream' });
+    if (error.length === 0) this.emitDashboard();
+    return error;
   }
 
   private emitDashboard(): void {
@@ -527,15 +544,18 @@ struct Index {
       });
     }
     const views: JobView[] = [];
+    const remoteCalls: JobView[] = [];
     // The task rail is local evidence, not a cluster-wide coordinator ledger.
     // A job with workerEpoch != 0 is only passing through this device on its way
     // to another compute. The executing compute creates its own workerEpoch=0 job,
     // so filtering here leaves exactly the tasks this box actually inferred.
     for (const job of this.jobs) {
       if (job.workerEpoch === 0) views.push(this.toJobView(job, now));
+      else remoteCalls.push(this.toJobView(job, now));
     }
     for (const job of this.finishedJobs) {
       if (job.workerEpoch === 0) views.push(this.toJobView(job, now));
+      else remoteCalls.push(this.toJobView(job, now));
     }
     const localRunning = this.jobs.filter((job: ActiveJob) => job.workerEpoch === 0).length;
     devices.sort(compareDevices);
@@ -549,6 +569,7 @@ struct Index {
       selfLabel: this.selfComputeLabel(),
       devices: devices,
       jobs: views,
+      remoteCalls: remoteCalls,
       groups: groups,
       modelSettings: this.modelSettings()
     });
@@ -880,7 +901,8 @@ struct Index {
     }
     hilog.info(0, 'NearbyChat',
       'EXP mode=%{public}s origin=%{public}s worker=%{public}s ttft=%{public}d total=%{public}d chars=%{public}d hop=%{public}d err=%{public}s start=%{public}d mem=%{public}d thermal=%{public}d tier=%{public}d id=%{public}s',
-      job.routeMode, job.origin, job.source, ttft, total, job.answer.length,
+      job.routeMode, job.origin, job.source,
+      job.metrics?.streaming === true && job.metrics.outputChunks !== 1 ? ttft : -1, total, job.answer.length,
       job.workerEpoch === 0 ? 0 : 1, job.error ? '1' : '0', job.startedAt, mem, thermal,
       job.taskTier === undefined ? 0 : job.taskTier, job.id);
   }
@@ -904,11 +926,25 @@ struct Index {
     this.relay?.publishLoad();
   }
 
-  private updateInferTask(requestId: string, epoch: number, answer: string): void {
+  private updateJobMetrics(requestId: string, epoch: number, metrics: InferenceMetrics): void {
+    const job = this.findJob(requestId, epoch);
+    if (job !== undefined) job.metrics = metrics;
+  }
+
+  private recordFirstOutput(job: ActiveJob, outputAt?: number): void {
+    if (job.firstAt !== 0 || job.answer.length === 0) return;
+    const now = Date.now();
+    // Local native timestamps avoid collapsing callbacks drained in one 80ms poll.
+    // Remote calls deliberately use this device's receive clock instead.
+    job.firstAt = typeof outputAt === 'number' && Number.isFinite(outputAt) &&
+      outputAt >= job.startedAt && outputAt <= now ? outputAt : now;
+  }
+
+  private updateInferTask(requestId: string, epoch: number, answer: string, outputAt?: number): void {
     const job = this.findJob(requestId, epoch);
     if (job === undefined) return;
     job.answer = answer;
-    if (job.firstAt === 0 && answer.length > 0) job.firstAt = Date.now();
+    this.recordFirstOutput(job, outputAt);
     if (this.webActiveId === requestId) this.emit({ kind: 'text', text: answer, requestId: requestId });
     this.emitDashboard();
   }
@@ -1181,18 +1217,20 @@ struct Index {
 
   private routeWorkerReply(message: WireMessage, dispatch: DispatchEntry, forwardId: string): void {
     const id = dispatch.originRequestId;
+    if (message.metrics !== undefined) this.updateJobMetrics(id, dispatch.originEpoch, message.metrics);
     // originEpoch 0 = Hub 自己的请求被转发：回复不走出链接，直接回流聊天轨道。
     const selfOrigin = dispatch.originEpoch === 0;
     if (message.type === 'delta') {
       const job = this.findJob(id, dispatch.originEpoch);
       if (job === undefined) return;
+      if (!message.text || message.text.length === 0) return;
       job.answer += message.text || '';
       if (job.firstAt === 0) job.firstAt = Date.now();
       this.emitDashboard();
       if (selfOrigin) {
         if (this.webActiveId === id) this.emit({ kind: 'text', text: job.answer, requestId: id });
       } else {
-        this.channel.send({ type: 'delta', requestId: id, text: message.text || '' }, dispatch.originEpoch);
+        this.channel.send({ type: 'delta', requestId: id, text: message.text || '', metrics: message.metrics }, dispatch.originEpoch);
       }
       return;
     }
@@ -1208,7 +1246,7 @@ struct Index {
     if (!selfOrigin) {
       this.channel.send({
         type: 'done', requestId: id, finishReason: message.finishReason,
-        source: workerTail(dispatch.workerEpoch, this.channel.peerInfos(), this.selfComputeLabel())
+        source: workerTail(dispatch.workerEpoch, this.channel.peerInfos(), this.selfComputeLabel()), metrics: message.metrics
       }, dispatch.originEpoch);
     } else if (job !== undefined && message.finishReason !== 'cancelled') {
       // 与本地执行路径一致：完成的对话回填历史，供后续多轮上下文使用。
@@ -1408,15 +1446,17 @@ struct Index {
   private localUpdate(key: string, update: ChatUpdate): void {
     const job = this.findJobByKey(key);
     if (job === undefined) return;
+    if (update.metrics !== undefined) job.metrics = update.metrics;
     const id = job.id;
     if (update.kind === 'delta') {
+      if (update.text.length === 0) return;
       job.answer += update.text;
-      if (job.firstAt === 0) job.firstAt = Date.now();
+      this.recordFirstOutput(job, update.outputAt);
       // requestId lets the page update that one card instead of waiting for the next
       // dashboard poll; without it the rail lagged the reply by up to five seconds.
       if (this.webActiveId === id) this.emit({ kind: 'text', text: job.answer, requestId: id });
       this.emitDashboard();
-      if (job.peer) this.channel?.send({ type: 'delta', requestId: id, text: update.text }, job.epoch);
+      if (job.peer) this.channel?.send({ type: 'delta', requestId: id, text: update.text, metrics: update.metrics }, job.epoch);
       if (this.overlapArmed && this.pendingB !== null) {
         this.overlapArmed = false;
         const follow = this.pendingB;
@@ -1430,7 +1470,7 @@ struct Index {
     if (job.peer) {
       const message: WireMessage = update.error ? { type: 'error', requestId: id, error: update.error } :
         { type: 'done', requestId: id, finishReason: update.finishReason,
-          source: workerTail(0, this.channel.peerInfos(), this.selfComputeLabel()) };
+          source: workerTail(0, this.channel.peerInfos(), this.selfComputeLabel()), metrics: update.metrics };
       this.channel?.send(message, job.epoch);
       this.router.endSelf();
     } else if (!update.error && update.finishReason !== 'cancelled' &&
@@ -1534,7 +1574,10 @@ struct Index {
 
   /** Clears the finished-task list only; running tasks stay so their results still arrive. */
   private clearFinishedJobs(): void {
-    this.finishedJobs = [];
+    const activeTasks = this.taskViews().filter((group: TaskGroupView): boolean => group.endedAt === 0)
+      .map((group: TaskGroupView): string => group.key);
+    this.finishedJobs = this.finishedJobs.filter((job: ActiveJob): boolean =>
+      job.taskId !== undefined && activeTasks.includes(Index.jobKey(job.epoch, job.taskId)));
     this.taskBoard.clearFinished();
     this.taskObserver.clearFinished();
     this.emitDashboard();
@@ -1570,7 +1613,7 @@ struct Index {
       Web({ src: $rawfile('peer-chat.html'), controller: this.controller })
         .javaScriptAccess(true)
         .domStorageAccess(false)
-        .javaScriptProxy({ object: this.bridge, name: 'chatBridge', methodList: ['send', 'stop', 'connect', 'prepare', 'pickImage', 'clear', 'clearImage', 'selectModel', 'models'], controller: this.controller })
+        .javaScriptProxy({ object: this.bridge, name: 'chatBridge', methodList: ['send', 'stop', 'connect', 'prepare', 'pickImage', 'clear', 'clearImage', 'selectModel', 'models', 'setOutputMode'], controller: this.controller })
         .onPageEnd(() => {
           this.pageReady = true;
           this.channel.subscribe(

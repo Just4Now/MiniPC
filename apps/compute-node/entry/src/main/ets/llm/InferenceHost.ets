@@ -1,5 +1,5 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ChatMessage as WireChatMessage, ClusterInfo, InferProfile, WireMessage } from '../protocol/ChatProtocol';
+import { ChatMessage as WireChatMessage, ClusterInfo, InferProfile, WireMessage, InferenceMetrics } from '../protocol/ChatProtocol';
 import { ChatMessage, ChatUpdate, LocalChat } from './LocalChat';
 import { LlmTransport } from './LlmTransport';
 import { QwenVlManager } from './QwenVlManager';
@@ -18,9 +18,12 @@ const MIN_WAIT_SECONDS = 10;
 
 /** Mirrors one accepted infer request onto the compute task rail. */
 export class InferCardHooks {
+  metrics: (requestId: string, epoch: number, metrics: InferenceMetrics) => void =
+    (_requestId: string, _epoch: number, _metrics: InferenceMetrics): void => {};
   begin: (requestId: string, epoch: number, prompt: string, label: string) => void =
     (_requestId: string, _epoch: number, _prompt: string, _label: string): void => {};
-  delta: (requestId: string, epoch: number, answer: string) => void = (_requestId: string, _epoch: number, _answer: string): void => {};
+  delta: (requestId: string, epoch: number, answer: string, outputAt?: number) => void =
+    (_requestId: string, _epoch: number, _answer: string, _outputAt?: number): void => {};
   end: (requestId: string, epoch: number, answer: string, failed: boolean) => void =
     (_requestId: string, _epoch: number, _answer: string, _failed: boolean): void => {};
 }
@@ -50,6 +53,7 @@ function waitSeconds(deadlineMs: number | undefined): number {
 }
 
 class HostRequest {
+  metrics?: InferenceMetrics;
   key: string = '';
   requestId: string = '';
   epoch: number = 0;
@@ -272,8 +276,13 @@ export class InferenceHost implements RelayLocal {
     if (this.requests.get(request.key) !== request) {
       return;
     }
+    if (update.metrics !== undefined) {
+      request.metrics = update.metrics;
+      try { this.card.metrics(request.requestId, request.epoch, update.metrics); } catch (_) { /* display only */ }
+    }
     if (update.kind === 'delta') {
       if (request.cancelled) return;
+      if (update.text.length === 0) return;
       if (request.seq === 0) {
         hilog.info(0, 'NearbyChat', 'infer output request=%{public}s epoch=%{public}d elapsedMs=%{public}d chars=%{public}d',
           request.requestId, request.epoch, Date.now() - request.startedAt, update.text.length);
@@ -288,11 +297,12 @@ export class InferenceHost implements RelayLocal {
         request.answer += piece;
         // A lost delta makes the stream undeliverable; generating further is wasted work.
         this.send({
-          type: 'infer.delta', version: 2, requestId: request.requestId, seq: request.seq, text: piece
+          type: 'infer.delta', version: 2, requestId: request.requestId, seq: request.seq, text: piece,
+          metrics: request.seq === 1 ? request.metrics : undefined
         }, request.epoch, (): void => this.cancel(request));
       }
       try {
-        this.card.delta(request.requestId, request.epoch, sanitizeModelOutput(request.answer, request.promptText));
+        this.card.delta(request.requestId, request.epoch, sanitizeModelOutput(request.answer, request.promptText), update.outputAt);
       } catch (_error) {
         hilog.warn(0, 'NearbyChat', 'infer card delta failed request=%{public}s', request.requestId);
       }
@@ -311,7 +321,8 @@ export class InferenceHost implements RelayLocal {
     this.requests.delete(request.key);
     this.send({
       type: 'infer.done', version: 2, requestId: request.requestId, lastSeq: request.seq,
-      outputUtf8Bytes: bytes.length, outputSha256: sha256Hex(bytes), finishReason: reason, source: 'mate70-local'
+      outputUtf8Bytes: bytes.length, outputSha256: sha256Hex(bytes), finishReason: reason, source: 'mate70-local',
+      metrics: request.metrics
     }, request.epoch);
     this.endCard(request, false);
   }
