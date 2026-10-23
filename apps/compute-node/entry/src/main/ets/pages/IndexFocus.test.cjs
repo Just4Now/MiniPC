@@ -642,7 +642,7 @@ function setup(isServer) {
   s.page.clearFinishedJobs();assert.equal(s.page.taskBoard.views().length,1,'clearing history preserves running parent');
   assert(s.page.finishedJobs.some(job=>job.id==='child-call'),'an active task keeps its returned model calls after history cleanup');
   s.page.taskBoard.disconnect(7);s.page.clearFinishedJobs();assert.equal(s.page.taskBoard.views().length,0);
-  const worker=setup(true);worker.channel.selfComputeNumber=()=>2;worker.channel.selfLabel=()=> '算力设备2';
+  const worker=setup(true);worker.channel.selfComputeNumber=()=>2;worker.channel.selfLabel=()=>'算力设备2';worker.channel.selfLabel=()=> '算力设备2';
   worker.channel.peerInfos=()=>[{epoch:8,peerId:'hub',role:'compute',ready:true,name:'算力设备1'}];
   worker.page.inference={isActive(){return false;},handle(message,epoch){worker.page.showInferTask(message.requestId,epoch,message.prompt,message.label||'')}};
   worker.page.receiveInference({type:'infer.request',requestId:'forwarded',prompt:'远端输入',taskId:task.id,subtaskId:'s2',origin:'聊天设备2'},8);
@@ -976,3 +976,38 @@ function setup(isServer) {
   assert(Array.isArray(poll[0].capabilities), 'the info poll frame must declare capabilities');
   console.log('PASS: compute info poll frame carries capabilities (validDeviceInfo-safe)');
 })().catch(error => { console.error(error); process.exitCode = 1; });
+
+(async () => {
+  const h=setup(true);h.page.pageReady=true;
+  const chat=epoch=>({epoch,peerId:'chat-'+epoch,deviceUid:'uid-'+epoch,name:'聊天设备'+(epoch-6),helloName:'聊天设备'+(epoch-6),role:'chat',ready:true,slot:epoch-6});
+  h.channel.peerInfos=()=>[chat(7),chat(8)];
+  for(const epoch of [7,8]){
+    h.page.receiveInference({type:'infer.request',requestId:'same',prompt:'图片问题',image:'YQ=='},epoch);
+    h.page.receiveInference({type:'infer.status',requestId:'same',source:'queue-display',state:'queued',text:'2000'},epoch);
+  }
+  assert.equal(h.page.queuedJobs.size,2,'same wire id from different chats must remain distinct');
+  const waiting=[...h.page.queuedJobs.values()];assert(waiting.every(job=>job.kind==='image'&&job.phase==='queued'&&job.source===''));
+  assert(waiting.every(job=>Date.now()-job.phaseStartedAt>=2000),'wait clocks preserve accumulated client retry time');
+  h.page.receiveInference({type:'infer.status',requestId:'same',source:'queue-display',state:'cleared'},7);
+  assert.equal(h.page.queuedJobs.size,1);
+  h.page.receiveInference({type:'infer.status',requestId:'forged',source:'queue-display',state:'queued'},7);
+  assert.equal(h.page.queuedJobs.size,1,'a wait notice needs a previously received request');
+  assert.equal(h.page.jobs.length,0,'display notices never schedule native work');
+  console.log('PASS: real image retry waits, local duration reconstruction, session isolation, cancellation and no phantom requests');
+
+  const hub=setup(true);hub.channel.peerInfos=()=>[{epoch:1,peerId:'w',deviceUid:'worker',name:'算力设备2',helloName:'算力设备2',role:'compute',slot:2,ready:true}];
+  const call={id:'r',key:'7:r',kind:'image',phase:'sending',origin:'聊天设备1',source:'算力设备1',originId:'phone',executorId:'self',startedAt:Date.now()-5000,phaseStartedAt:Date.now()-3000,running:true,question:'PRIVATE PROMPT',image:'PRIVATE IMAGE',answer:'PRIVATE ANSWER'};
+  hub.page.publishFlow([call]);await flush();
+  const first=hub.sent.find(message=>message.source==='flow-display');assert(first);
+  assert(!/PRIVATE/.test(first.text),'flow notices omit model input, image and answer payloads');
+  const count=hub.sent.length;hub.page.publishFlow([call]);await flush();assert.equal(hub.sent.length,count,'stream refreshes must not flood the wire with display frames');
+  const worker=setup(true);worker.channel.selfComputeNumber=()=>2;worker.channel.selfLabel=()=>'算力设备2';
+  worker.channel.peerInfos=()=>[{epoch:1,peerId:'hub',name:'算力设备1',helloName:'算力设备1',role:'compute',slot:1,ready:true}];
+  worker.page.receiveFlow(first,1);assert.equal(worker.page.flowMirrors.size,1);
+  assert([...worker.page.flowMirrors.values()].every(job=>job.kind==='image'&&job.phase==='sending'));
+  hub.page.publishFlow([]);await flush();const last=hub.sent.filter(message=>message.source==='flow-display').at(-1);
+  worker.page.receiveFlow(last,1);assert.equal(worker.page.flowMirrors.size,0);
+  worker.page.receiveFlow(first,1);assert.equal(worker.page.flowMirrors.size,0,'late start snapshots cannot revive a cleared request');
+  worker.page.receiveFlow({...first,text:'{bad json'},1);worker.page.receiveFlow(first,99);assert.equal(worker.page.flowMirrors.size,0);
+  console.log('PASS: worker flow mirrors, payload privacy, phase-only publication, terminal revisions and sender/schema checks');
+})().catch(error=>{console.error(error);process.exitCode=1;});

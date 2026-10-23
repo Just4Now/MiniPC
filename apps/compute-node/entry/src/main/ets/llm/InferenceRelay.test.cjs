@@ -252,6 +252,22 @@ test('unavailable devices still return retryable refusal',()=>{
   const h=harness([self({ready:false}),worker({ready:false})]);h.relay.handleFromChat(request('a'),5);
   assert.equal(h.to(5,'infer.error')[0].code,'BUSY');assert.equal(h.to(5,'infer.error')[0].retryable,true);
 });
+test('hub acknowledges admission while worker payload is still in flight, without claiming execution', () => {
+  const h = harness([self({ ready: false }), worker()]);
+  h.relay.handleFromChat(request('slow-transfer'), 5);
+  const forwarded = h.to(7, 'infer.request')[0];
+  assert.equal(h.to(5, 'infer.accepted')[0].state, 'queued');
+  assert.equal(h.to(5, 'infer.accepted')[0].device, '算力设备2');
+  assert.equal(h.router.getByForwardId(forwarded.requestId).accepted, false);
+  assert.equal(h.router.workerLoad(7, 0), 1);
+  h.relay.handleFromChat(request('second'), 6);
+  assert.equal(h.router.workerLoad(7, 0), 2, 'in-flight uploads count before worker acceptance');
+  h.relay.handleFromWorker({ type: 'infer.accepted', requestId: forwarded.requestId, state: 'preparing' }, 7);
+  assert.equal(h.router.getByForwardId(forwarded.requestId).accepted, true);
+  h.relay.handleFromChat({ type: 'infer.cancel', requestId: 'slow-transfer' }, 5);
+  assert.equal(h.to(7, 'infer.cancel')[0].requestId, forwarded.requestId);
+});
+
 test('worker replies are rewritten to the origin id with payload, seq and hash untouched', () => {
   const h = harness([self({ inflight: 1 }), worker()]);
   h.relay.handleFromChat(request('r1'), 5);
@@ -260,11 +276,12 @@ test('worker replies are rewritten to the origin id with payload, seq and hash u
   h.relay.handleFromWorker({ type: 'infer.delta', requestId: fid, seq: 1, text: '你好' }, 7);
   h.relay.handleFromWorker({ type: 'infer.done', requestId: fid, lastSeq: 1, outputUtf8Bytes: 6, outputSha256: 'abc', finishReason: 'stop', source: 'w' }, 7);
   const out = h.to(5).filter((m) => m.type !== 'infer.status');
-  assert.deepEqual(out.map((m) => m.type), ['infer.accepted', 'infer.delta', 'infer.done']);
+  assert.deepEqual(out.map((m) => m.type), ['infer.accepted', 'infer.accepted', 'infer.delta', 'infer.done']);
   assert.ok(out.every((m) => m.requestId === 'r1'));
   assert.equal(out[0].device, '算力设备2');
-  assert.deepEqual([out[1].seq, out[1].text], [1, '你好']);
-  assert.deepEqual([out[2].lastSeq, out[2].outputUtf8Bytes, out[2].outputSha256, out[2].finishReason], [1, 6, 'abc', 'stop']);
+  assert.equal(out[0].state, 'queued');
+  assert.deepEqual([out[2].seq, out[2].text], [1, '你好']);
+  assert.deepEqual([out[3].lastSeq, out[3].outputUtf8Bytes, out[3].outputSha256, out[3].finishReason], [1, 6, 'abc', 'stop']);
   assert.deepEqual(h.events.slice(-1)[0], ['end', 'r1', 5, '你好', false]);
   assert.equal(h.router.getByForwardId(fid), undefined, 'hand-off released');
 });

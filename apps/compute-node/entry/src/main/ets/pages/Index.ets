@@ -33,13 +33,18 @@ import { inferenceSummary } from '../ui/InferencePresentation';
 import { InferenceTaskObserver } from '../ui/InferenceTaskObserver';
 import { collaborationScreen } from '../ui/CollaborationScreen';
 
+interface FlowNotice {
+  key: string; kind: string; phase: string; origin: string; source: string;
+  originId?: string; executorId?: string; elapsed: number; updatedAt: number; revision: number; signature: string;
+}
+
 interface RosterDelivery {
   signature: string;
   pending: boolean;
   lastFullAt: number;
 }
 
-interface TaskRequestLink { taskId?: string; subtaskId?: string; origin: string; input: string; }
+interface TaskRequestLink { imageTask?: boolean; taskId?: string; subtaskId?: string; origin: string; input: string; }
 
 function sameName(left: string, right: string): boolean {
   return left.length > 0 && right.length > 0 &&
@@ -111,6 +116,12 @@ struct Index {
   private question: string = '';
   private jobs: ActiveJob[] = [];
   private finishedJobs: ActiveJob[] = [];
+  private queuedJobs: Map<string, JobView> = new Map();
+  private flowRevision: number = 0;
+  private flowNotices: Map<string, FlowNotice> = new Map();
+  private flowDeliveries: Map<number, Map<string, number>> = new Map();
+  private flowMirrors: Map<string, JobView> = new Map();
+  private flowVersions: Map<string, number> = new Map();
   private taskBoard: TaskBoard = new TaskBoard();
   private taskObserver: InferenceTaskObserver = new InferenceTaskObserver();
   private taskDisplay: TaskDisplayRelay = new TaskDisplayRelay((message: WireMessage, epoch: number): Promise<boolean> =>
@@ -141,6 +152,7 @@ struct Index {
       this.filesDir = context.getApplicationContext().filesDir;
       this.model = new LocalChat(this.filesDir);
       const card = new InferCardHooks();
+      card.phase = (id: string, epoch: number, phase: string): void => this.updateJobPhase(id, epoch, phase);
       card.metrics = (requestId: string, epoch: number, metrics: InferenceMetrics): void => {
         this.updateJobMetrics(requestId, epoch, metrics);
       };
@@ -159,6 +171,7 @@ struct Index {
       const host = this.inference;
       host.setDeviceProvider((): string => this.selfComputeLabel());
       const events = new RelayEvents();
+      events.phase = (id: string, epoch: number, phase: string): void => this.updateJobPhase(id, epoch, phase);
       events.metrics = (requestId: string, epoch: number, metrics: InferenceMetrics): void => {
         this.updateJobMetrics(requestId, epoch, metrics);
       };
@@ -355,6 +368,8 @@ struct Index {
     const link = this.taskLinks.get(Index.jobKey(epoch, id));
     this.taskLinks.delete(Index.jobKey(epoch, id));
     return {
+      kind: link?.imageTask || image.length > 0 ? 'image' : 'text',
+      phase: workerEpoch === 0 ? 'running' : 'sending', phaseStartedAt: Date.now(),
       taskId: link?.taskId, subtaskId: link?.subtaskId,
       input: link?.input,
       id: id, key: Index.jobKey(epoch, id), epoch: epoch, peer: peer, answer: '', question: messages[messages.length - 1].content,
@@ -384,6 +399,11 @@ struct Index {
     return {
       groupKey: job.taskId !== undefined ? Index.jobKey(job.epoch, job.taskId) : undefined, subtaskId: job.subtaskId,
       input: job.input, metrics: job.metrics,
+      kind: job.kind, phase: ended ? (job.error ? 'failed' : 'done') : job.phase,
+      phaseStartedAt: job.phaseStartedAt || job.startedAt,
+      originId: this.channel.peerInfos().find((peer) => peer.epoch === job.epoch && peer.role === 'chat')?.deviceUid,
+      executorId: job.workerEpoch === 0 ? this.channel.localUid() :
+        this.channel.peerInfos().find((peer) => peer.epoch === job.workerEpoch)?.deviceUid,
       id: job.id, key: job.key, source: job.source, origin: job.origin, local: !job.peer,
       image: job.image, question: job.question, answer: job.answer,
       chars: job.answer.length, startedAt: job.startedAt, firstAt: job.firstAt,
@@ -559,6 +579,7 @@ struct Index {
     }
     const localRunning = this.jobs.filter((job: ActiveJob) => job.workerEpoch === 0).length;
     devices.sort(compareDevices);
+    this.publishFlow(views.concat(remoteCalls).concat(Array.from(this.queuedJobs.values())));
     this.emit({
       kind: 'dashboard',
       text: this.connectionError || this.channel.getStatus(),
@@ -570,6 +591,11 @@ struct Index {
       devices: devices,
       jobs: views,
       remoteCalls: remoteCalls,
+      flowCalls: this.isComputeHub() ? [] : Array.from(this.flowMirrors.values()).filter((job: JobView): boolean => now - job.startedAt < 600000),
+      queuedCalls: Array.from(this.queuedJobs.values()).filter((job: JobView): boolean => {
+        if (now - job.startedAt <= 130000) return true;
+        this.queuedJobs.delete(job.key); return false;
+      }),
       groups: groups,
       modelSettings: this.modelSettings()
     });
@@ -597,6 +623,9 @@ struct Index {
       // InferenceHost owns its per-request native identifiers and cancellation.
       if (dropped) {
         this.taskBoard.disconnect(epoch);
+        for (const job of this.queuedJobs.values()) if (job.key.indexOf(String(epoch) + ':') === 0) this.queuedJobs.delete(job.key);
+        this.flowDeliveries.delete(epoch);
+        if (!this.isComputeHub()) { this.flowMirrors.clear(); this.flowVersions.clear(); }
         this.taskObserver.disconnect(epoch);
         this.inference?.peerDropped(epoch);
         // Relay first: it owns the infer.* hand-offs that cancelDroppedPeers must not treat as chat requests.
@@ -931,6 +960,13 @@ struct Index {
     if (job !== undefined) job.metrics = metrics;
   }
 
+  private updateJobPhase(id: string, epoch: number, phase: string): void {
+    const job = this.findJob(id, epoch);
+    if (job === undefined || job.endedAt > 0 || job.phase === phase) return;
+    job.phase = phase; job.phaseStartedAt = Date.now();
+    this.emitDashboard();
+  }
+
   private recordFirstOutput(job: ActiveJob, outputAt?: number): void {
     if (job.firstAt !== 0 || job.answer.length === 0) return;
     const now = Date.now();
@@ -943,6 +979,7 @@ struct Index {
   private updateInferTask(requestId: string, epoch: number, answer: string, outputAt?: number): void {
     const job = this.findJob(requestId, epoch);
     if (job === undefined) return;
+    this.updateJobPhase(requestId, epoch, 'running');
     job.answer = answer;
     this.recordFirstOutput(job, outputAt);
     if (this.webActiveId === requestId) this.emit({ kind: 'text', text: answer, requestId: requestId });
@@ -974,6 +1011,7 @@ struct Index {
   private updateRelayTask(requestId: string, chatEpoch: number, answer: string): void {
     const job = this.findJob(requestId, chatEpoch);
     if (job === undefined) return;
+    this.updateJobPhase(requestId, chatEpoch, 'running');
     job.answer = answer;
     if (job.firstAt === 0 && answer.length > 0) job.firstAt = Date.now();
     if (this.webActiveId === requestId) this.emit({ kind: 'text', text: answer, requestId: requestId });
@@ -1027,7 +1065,102 @@ struct Index {
     return nodes;
   }
 
+  /** Small display notices, sent only when membership or a request phase changes. */
+  private publishFlow(calls: JobView[]): void {
+    if (!this.isComputeHub()) return;
+    const present: string[] = [];
+    for (const job of calls) {
+      const key = job.key + ':' + job.startedAt.toString();
+      present.push(key);
+      const phase = job.running ? (job.phase || 'running') : 'cleared';
+      const signature = [phase, job.kind || 'text', job.origin, job.source, job.originId || '', job.executorId || ''].join('|');
+      if (this.flowNotices.get(key)?.signature === signature) continue;
+      this.flowNotices.set(key, { key: key, kind: job.kind || 'text', phase: phase,
+        origin: job.origin, source: job.source, originId: job.originId, executorId: job.executorId,
+        elapsed: Math.max(0, Date.now() - (job.phaseStartedAt || job.startedAt)), updatedAt: Date.now(),
+        revision: ++this.flowRevision, signature: signature });
+    }
+    for (const notice of this.flowNotices.values()) {
+      if (!present.includes(notice.key) && notice.phase !== 'cleared') {
+        notice.phase = 'cleared'; notice.signature = 'cleared'; notice.revision = ++this.flowRevision;
+      }
+    }
+    while (this.flowNotices.size > 256) this.flowNotices.delete(Array.from(this.flowNotices.keys())[0]);
+    const peers = this.channel.peerInfos().filter((peer) => peer.ready && peer.role === 'compute');
+    for (const peer of peers) {
+      let delivered = this.flowDeliveries.get(peer.epoch);
+      if (delivered === undefined) { delivered = new Map(); this.flowDeliveries.set(peer.epoch, delivered); }
+      for (const notice of this.flowNotices.values()) {
+        // The executor already has authoritative local callbacks for its own calls.
+        if (notice.source === computeLabel(peer.epoch, this.channel.peerInfos()) && !delivered.has(notice.key)) continue;
+        if ((delivered.get(notice.key) || 0) >= notice.revision) continue;
+        const revision = notice.revision;
+        delivered.set(notice.key, revision);
+        // No prompt, answer or image data is included in this display channel.
+        const payload: FlowNotice = { key: notice.key, kind: notice.kind, phase: notice.phase, origin: notice.origin,
+          source: notice.source, originId: notice.originId, executorId: notice.executorId,
+          elapsed: notice.elapsed + Math.max(0, Date.now() - notice.updatedAt), updatedAt: 0, revision: revision, signature: '' };
+        this.channel.send({ type: 'infer.status', version: 2, requestId: 'flow', source: 'flow-display',
+          text: JSON.stringify(payload) }, peer.epoch).then((sent: boolean): void => {
+          if (!sent && delivered?.get(notice.key) === revision) delivered.delete(notice.key);
+        }).catch((): void => { if (delivered?.get(notice.key) === revision) delivered.delete(notice.key); });
+      }
+      for (const key of delivered.keys()) if (!this.flowNotices.has(key)) delivered.delete(key);
+    }
+    for (const epoch of this.flowDeliveries.keys()) if (!peers.some((peer) => peer.epoch === epoch)) this.flowDeliveries.delete(epoch);
+  }
+
+  private receiveFlow(message: WireMessage, epoch: number): void {
+    const peers = this.channel.peerInfos();
+    const peer = peers.find((item) => item.epoch === epoch);
+    if (this.isComputeHub() || !peer?.ready || peer.role !== 'compute' || computeLabel(epoch, peers) !== '算力设备1') return;
+    let notice: FlowNotice;
+    try { notice = JSON.parse(message.text || '') as FlowNotice; } catch (_) { return; }
+    if (notice === null || typeof notice !== 'object' || typeof notice.key !== 'string' || notice.key.length > 256 ||
+      !Number.isSafeInteger(notice.revision) || notice.revision < 1 ||
+      !['text', 'image'].includes(notice.kind) || !['sending', 'running', 'queued', 'cleared'].includes(notice.phase) ||
+      typeof notice.origin !== 'string' || notice.origin.length > 128 ||
+      typeof notice.source !== 'string' || notice.source.length > 128 ||
+      (notice.originId !== undefined && (typeof notice.originId !== 'string' || notice.originId.length > 128)) ||
+      (notice.executorId !== undefined && (typeof notice.executorId !== 'string' || notice.executorId.length > 128)) ||
+      typeof notice.elapsed !== 'number' || !Number.isFinite(notice.elapsed) || notice.elapsed < 0 || notice.elapsed > 86400000 ||
+      notice.revision <= (this.flowVersions.get(notice.key) || 0)) return;
+    this.flowVersions.set(notice.key, notice.revision);
+    while (this.flowVersions.size > 256) this.flowVersions.delete(Array.from(this.flowVersions.keys())[0]);
+    if (notice.phase === 'cleared' || notice.source === this.selfComputeLabel()) {
+      this.flowMirrors.delete(notice.key);
+    } else {
+      if (!this.flowMirrors.has(notice.key) && this.flowMirrors.size >= 128) return;
+      const now = Date.now();
+      this.flowMirrors.set(notice.key, { key: 'mirror:' + notice.key, id: notice.key, origin: this.forwardedOrigin(notice.origin),
+        source: notice.source, originId: notice.originId, executorId: notice.executorId,
+        kind: notice.kind, phase: notice.phase, phaseStartedAt: now - notice.elapsed,
+        question: '', answer: '', chars: 0, startedAt: now - notice.elapsed, endedAt: 0, firstAt: 0, running: true, error: false, elapsedMs: notice.elapsed });
+    }
+    this.emitDashboard();
+  }
+
   private receiveInference(message: WireMessage, epoch: number): void {
+    if (message.type === 'infer.status' && message.source === 'flow-display') { this.receiveFlow(message, epoch); return; }
+    // Chat-owned retry waiting is display-only; it must never create model work.
+    if (message.type === 'infer.status' && message.source === 'queue-display') {
+      const peer = this.channel.peerInfos().find((item) => item.epoch === epoch);
+      if (!this.isComputeHub() || !peer?.ready || peer.role !== 'chat') return;
+      const id = message.requestId || '';
+      const key = Index.jobKey(epoch, id);
+      if (message.state === 'queued' && this.taskLinks.has(key) && !this.findJob(id, epoch) && !this.queuedJobs.has(key)) {
+        if (this.queuedJobs.size >= 128) return;
+        const job = this.createJob(id, [{ role: 'user', content: '等待分配' }], true, epoch);
+        const view = this.toJobView(job, Date.now());
+        view.phase = 'queued'; view.source = ''; view.executorId = undefined;
+        const elapsed = Number(message.text || '0');
+        if (Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= 120000) view.phaseStartedAt = Date.now() - elapsed;
+        this.queuedJobs.set(key, view);
+      } else if (message.state === 'cleared') {
+        this.queuedJobs.delete(key); this.taskLinks.delete(key);
+      }
+      this.emitDashboard(); return;
+    }
     if (message.type === 'infer.task') {
       const peer = this.channel.peerInfos().find((item) => item.epoch === epoch);
       const fromChat = this.isComputeHub() && peer?.ready && peer.role === 'chat';
@@ -1046,11 +1179,12 @@ struct Index {
     }
     if (message.type === 'infer.request') {
       const peer = this.channel.peerInfos().find((item) => item.epoch === epoch);
+      this.queuedJobs.delete(Index.jobKey(epoch, message.requestId || ''));
       const origin = peer?.role === 'chat' ? chatLabel(epoch, this.channel.peerInfos()) : this.forwardedOrigin(message.origin || '');
       message.origin = origin;
       if (this.taskLinks.size >= 128) this.taskLinks.delete(Array.from(this.taskLinks.keys())[0]);
       this.taskLinks.set(Index.jobKey(epoch, message.requestId || ''), {
-        taskId: message.taskId, subtaskId: message.subtaskId, origin: origin,
+        imageTask: !!message.image, taskId: message.taskId, subtaskId: message.subtaskId, origin: origin,
         input: message.prompt !== undefined ? message.prompt : (message.messages || []).map((item: ChatMessage): string => '[' + item.role + ']\n' + item.content).join('\n\n') });
     }
     if (message.type === 'infer.accepted' || message.type === 'infer.status' || message.type === 'infer.delta' ||
@@ -1224,6 +1358,7 @@ struct Index {
       const job = this.findJob(id, dispatch.originEpoch);
       if (job === undefined) return;
       if (!message.text || message.text.length === 0) return;
+      this.updateJobPhase(id, dispatch.originEpoch, 'running');
       job.answer += message.text || '';
       if (job.firstAt === 0) job.firstAt = Date.now();
       this.emitDashboard();

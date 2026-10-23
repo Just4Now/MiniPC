@@ -28,6 +28,8 @@ export interface PageEvent {
   jobs?: JobView[];
   /** Hub-observed forwarded calls, available in task details only. */
   remoteCalls?: JobView[];
+  queuedCalls?: JobView[];
+  flowCalls?: JobView[];
   groups?: TaskGroupView[];
   modelSettings?: ModelSettingsView;
 }
@@ -52,6 +54,11 @@ export interface DeviceView {
 }
 
 export interface JobView {
+  kind?: string;
+  phase?: string;
+  phaseStartedAt?: number;
+  originId?: string;
+  executorId?: string;
   metrics?: InferenceMetrics;
   input?: string;
   groupKey?: string;
@@ -75,6 +82,11 @@ export interface JobView {
 }
 
 export interface ActiveJob {
+  kind?: string;
+  phase?: string;
+  phaseStartedAt?: number;
+  originId?: string;
+  executorId?: string;
   metrics?: InferenceMetrics;
   input?: string;
   taskId?: string;

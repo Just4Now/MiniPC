@@ -231,9 +231,27 @@
     .round-list{flex:1;min-width:0;max-height:none;overflow:visible;padding:0}
     .round-list select{width:100%;min-width:0;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:inherit;font:inherit;font-size:12px}
     .task-result{white-space:normal;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:5px}
-  </style>
+      .task-view-switch{display:flex;gap:3px;background:#f1f3f8;border-radius:10px;padding:3px;margin-left:auto}.task-view-switch button{font:inherit;font-size:13px;white-space:nowrap;border:0;border-radius:7px;padding:7px 10px;background:none;color:var(--muted);cursor:pointer}.task-view-switch button[aria-pressed=true]{background:#fff;color:var(--accent);box-shadow:0 1px 4px #25356715}
+    .flow-view{flex:1;min-height:0;overflow:auto;padding:14px 22px 20px;overscroll-behavior:contain}.flow-view[hidden],#history[hidden],#historyControls[hidden],#taskCount[hidden]{display:none}
+    .flow-labels{display:grid;grid-template-columns:154px 146px 1fr;min-width:920px;color:var(--muted);font-size:12px;padding-bottom:16px}.flow-labels span:last-child{padding-left:30px}.flow-scene{position:relative;min-height:400px}.flow-wires{position:absolute;inset:0;width:100%;height:100%;overflow:visible}.flow-wire{fill:none;stroke:#bfc8d8;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.flow-wire.active{stroke:#4e6bd6;stroke-width:3.6}
+    .flow-phone{position:absolute;left:2px;width:88px;display:flex;flex-direction:column;align-items:center;gap:9px;font-size:13px;font-weight:600}.flow-phone>svg{width:44px;height:66px;color:#89919f}.flow-phone>span{text-align:center;overflow-wrap:anywhere}.flow-router{position:absolute;left:154px;width:64px;height:52px;display:grid;place-items:center;border:1.5px solid #a9b1c0;border-radius:11px;background:#fff;color:#858fa2}.flow-router>svg{width:40px;height:30px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linejoin:round;stroke-linecap:round}.flow-router>span{position:absolute;top:61px;color:var(--ink);white-space:nowrap;font-size:13px;font-weight:600}.flow-router.active{border-color:#849ae6;background:#f6f8ff;color:#4e6bd6}
+    .flow-compute{position:absolute;display:grid;grid-template-columns:104px minmax(210px,1fr) minmax(210px,1fr);gap:18px;padding:18px;border:1px solid #e4e9ee;border-radius:17px;background:#fcfdfd}.flow-computer{align-self:start;display:flex;flex-direction:column;align-items:center;gap:9px;font-size:14px;font-weight:600;padding-top:4px}.flow-computer>svg{width:100px;height:70px;color:#89919f}.flow-computer>span{text-align:center;overflow-wrap:anywhere}.flow-memory{width:92px;margin-top:0}.flow-memory>i{height:8px;background:#e3e6eb;border-radius:5px;display:block;overflow:hidden}.flow-memory em{height:100%;display:block;border-radius:5px}.flow-memory>span{display:flex;justify-content:space-between;font-size:11px;line-height:14px;font-weight:450;color:#626b85;margin-top:5px}.flow-memory b{font-weight:600}.flow-computer small{font-size:12px;color:#94640e}.flow-lane{display:flex;flex-direction:column;gap:8px;min-width:0}.flow-lane h3,.flow-pending h3{font-size:15px;font-weight:600;color:#127650;line-height:18px;margin:0 0 2px}.flow-lane h3:before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block;vertical-align:3px;margin-right:6px}.flow-lane.queue h3,.flow-pending h3{color:#866018}.flow-idle{font-size:12px;color:var(--muted);padding:16px 0}
+    .flow-task{height:50px;min-height:50px;display:grid;grid-template-columns:30px minmax(36px,1fr) auto;gap:10px;align-items:center;border:1px solid #d4e9de;border-radius:9px;background:#f2faf6;padding:8px 12px;color:#385745;font:inherit;text-align:left;position:relative}.flow-task:is(button){cursor:pointer}.flow-task>span{font-size:18px;font-weight:550}.flow-type{width:30px;height:30px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}.flow-task b{font:620 26px/1 ui-monospace,'SFMono-Regular',Consolas,monospace;letter-spacing:.2px;font-variant-numeric:tabular-nums;color:#237b58}.flow-task.working:before{content:'';position:absolute;left:-1px;top:12px;bottom:12px;width:2px;background:#71b391}.flow-task.waiting{border-color:#ebdfc4;background:#fff9ed;color:#866018}.flow-task.waiting b{color:#866018}.flow-packet{position:absolute;left:0;top:0;width:44px;height:44px;border:1.5px solid #849ae6;border-radius:9px;background:#f4f6ff;color:#4e6bd6;display:grid;place-items:center;offset-rotate:0deg;animation:flow-travel 1.2s linear infinite;pointer-events:none;z-index:1}.flow-packet .flow-type{width:28px;height:28px}@keyframes flow-travel{from{offset-distance:0%}to{offset-distance:100%}}@media(prefers-reduced-motion:reduce){.flow-packet{animation:none;offset-distance:65%}}
+    .flow-pending{min-width:600px;margin-top:12px;margin-left:300px}.flow-pending>div{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}.flow-pending .flow-task{width:220px}.flow-empty{position:absolute;left:330px;top:150px;color:var(--muted);font-size:14px}
+    @media(max-width:959px){.flow-view{padding:12px 16px;min-height:230px}.task-view-switch button{font-size:12px;padding:7px}.task-toolbar{padding:14px 16px 0}.task-heading{flex-wrap:wrap}.task-view-switch{margin-left:0}.clear-tasks{font-size:12px}.task-hint{font-size:12px}.stats{overflow-x:auto}.stat{flex:0 0 auto;min-width:130px}}
+
+</style>
 </head>
 <body>
+<svg style="position:absolute;width:0;height:0;overflow:hidden" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+<symbol id="flow-phone" viewBox="0 0 58 87"><g fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="2" width="46" height="81" rx="8" fill="#fff"/><rect x="10" y="8" width="38" height="65" rx="3" stroke="#d3d8e1" fill="#fbfcff"/><path d="M24 5h10M24 78h10" stroke-linecap="round"/></g></symbol>
+<symbol id="flow-pc" viewBox="0 0 110 83"><g fill="white" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="16" y="4" width="78" height="52" rx="4"/><rect x="21" y="9" width="68" height="41" rx="1.5" stroke="#cbd1da" stroke-width="1.2" fill="#fcfdfd"/><path d="M16 57h78l12 17q1 4-4 4H8q-5 0-4-4z"/><path d="M4 73h102M26 61h58l5 7H22z" stroke="#bdc5cf" stroke-width="1.1"/><path d="M46 71h18l3 5H43z" stroke="#b2bac5" stroke-width="1"/><path d="M34 61l-2 7m15-7-1 7m15-7 1 7m13-7 2 7" stroke="#d1d6de" stroke-width="1"/></g></symbol>
+<symbol id="flow-task-text" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h6"/></symbol>
+<symbol id="flow-task-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="16" cy="9" r="1.5"/><path d="m3 17 5-6 5 6 3-3 5 5"/></symbol>
+<symbol id="flow-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 4.5V8l2 1.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="flow-mini-phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 5h4m-3 14h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="flow-mini-pc" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m4 16-2 4h20l-2-4M9 8h6v4H9z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+</defs></svg>
   <main class="app">
     <header>
       <svg class="brand" viewBox="0 0 36 36" aria-hidden="true"><rect width="36" height="36" rx="12" fill="#3d5bdb"/><circle cx="11" cy="18" r="3" fill="#fff"/><circle cx="25" cy="12" r="3" fill="#fff"/><circle cx="25" cy="24" r="3" fill="#fff"/><path stroke="#fff" stroke-width="1.6" d="M13.6 16.8 22.4 13.2M13.6 19.2 22.4 22.8"/></svg>
@@ -275,17 +293,18 @@
     </aside>
     <section class="task-panel" aria-label="本机推理任务">
       <div id="taskToolbar" class="task-toolbar">
-        <div class="task-heading"><h2>本机推理任务</h2><button id="clearTasks" class="clear-tasks" type="button">清空历史</button></div>
-        <p class="task-hint">查看任务输入、最终结果和耗时，过程记录见推理详情</p>
-        <div id="filters" class="filters" aria-label="筛选推理请求">
+        <div class="task-heading"><h2>推理任务</h2><div id="taskViewSwitch" class="task-view-switch" aria-label="任务视图"><button type="button" data-task-view="flow" aria-pressed="true">协同视图</button><button type="button" data-task-view="history" aria-pressed="false">任务历史</button></div><button id="clearTasks" class="clear-tasks" type="button">清空历史</button></div>
+        <p class="task-hint">设备协同、任务路由与推理状态</p>
+        <div id="historyControls" hidden><div id="filters" class="filters" aria-label="筛选推理请求">
           <button class="filter" type="button" data-filter="all" aria-pressed="true">全部</button>
           <button class="filter" type="button" data-filter="running" aria-pressed="false">进行中</button>
           <button class="filter" type="button" data-filter="finished" aria-pressed="false">已完成</button>
         </div>
         <div class="task-columns" aria-hidden="true"><span>任务 / 来源</span><span>执行设备</span><span>状态</span><span style="text-align:right">操作</span></div>
-      </div>
-      <section id="history" class="list" aria-label="推理请求"></section>
-      <p id="taskCount" class="task-count"></p>
+      </div></div>
+      <section id="collaboration" class="flow-view" aria-label="设备协同运行图"></section>
+      <section id="history" hidden class="list" aria-label="推理请求"></section>
+      <p hidden id="taskCount" class="task-count"></p>
       <section id="detail" class="detail" role="region" aria-label="推理详情" hidden></section>
     </section>
     <div class="sheet">
@@ -622,11 +641,146 @@
       sendButton.setAttribute('aria-label',local?'停止生成':'发送');
       pickButton.disabled=local;
     }
+    // The collaboration scene is a projection of native evidence. It never schedules work.
+    const flowView=document.getElementById('collaboration');
+    const historyControls=document.getElementById('historyControls');
+    const viewSwitch=document.getElementById('taskViewSwitch');
+    let taskView='flow',queuedCalls=[],mirroredCalls=[],flowSignature='',flowItems=[];
+    const flowSeen=new Map(),flowWaitStarts=new Map(),flowFlights=new Map();
+    function flowClock(ms){
+      const seconds=Math.max(0,Math.floor(ms/1000));
+      const pad=n=>String(n).padStart(2,'0');
+      return (seconds>=3600?pad(Math.floor(seconds/3600))+':':'')+pad(Math.floor(seconds/60)%60)+':'+pad(seconds%60);
+    }
+    function flowIcon(kind){return '<svg class="flow-type" aria-hidden="true"><use href="#flow-task-'+(kind==='image'?'image':'text')+'"/></svg>';}
+    function resolveFlowDevice(id,label,compute){
+      const candidates=devices.filter(device=>(device.role==='self'||device.role==='compute')===compute);
+      if(id)return candidates.find(device=>device.id===id)||null;
+      const matches=candidates.filter(device=>device.name===label||(device.role==='self'&&label==='本机'&&compute));
+      return matches.length===1?matches[0]:null;
+    }
+    function flowData(){
+      const now=Date.now(),items=[],live=allCalls().concat(mirroredCalls.filter(job=>job.phase!=='queued')).filter(job=>job.running);
+      for(const job of live){
+        const executor=resolveFlowDevice(job.executorId,job.source||selfLabel,true);
+        const origin=resolveFlowDevice(job.originId,job.origin,false);
+        const key=jobKey(job)+':'+job.startedAt;
+        const phase=job.phase||'running';
+        const item={key,jobKey:job.key&&job.key.indexOf('mirror:')===0?undefined:jobKey(job),kind:job.kind||((job.image||/^（附图）/.test(job.question||''))?'image':'text'),
+          phase,at:job.phaseStartedAt||job.startedAt||now,origin:origin&&origin.id,executor:executor&&executor.id};
+        items.push(item);
+        // A brief one-shot shows an observed dispatch even when acceptance was faster than painting.
+        const route=key+':'+(item.executor||'');
+        if(!flowSeen.has(route)){flowSeen.set(route,now);if(executor&&(phase==='sending'||now-(job.startedAt||0)<2000))flowFlights.set(route,{...item,until:now+1200});}
+      }
+      for(const job of queuedCalls.concat(mirroredCalls.filter(job=>job.phase==='queued'))){
+        if(now-job.startedAt>130000)continue;
+        items.push({key:'waiting:'+jobKey(job),kind:job.kind||'text',phase:'queued',at:job.phaseStartedAt||job.startedAt,
+          origin:(resolveFlowDevice(job.originId,job.origin,false)||{}).id,executor:null});
+      }
+      for(const group of groups){
+        if(!groupRunning(group))continue;
+        for(const child of group.subtasks||[]){
+          if(child.phase!=='queued'||live.some(job=>job.groupKey===group.key&&job.subtaskId===child.id))continue;
+          // An explicit retry-wait notice is more precise than a parent snapshot.
+          if(queuedCalls.some(job=>job.groupKey===group.key&&job.subtaskId===child.id))continue;
+          const key='child:'+group.key+':'+child.id;
+          if(!flowWaitStarts.has(key))flowWaitStarts.set(key,now);
+          const executor=resolveFlowDevice('',child.device,true);
+          items.push({key,groupKey:group.key,childId:child.id,kind:'text',phase:'queued',at:flowWaitStarts.get(key),
+            origin:(resolveFlowDevice('',group.origin,false)||{}).id,executor:executor&&executor.id});
+        }
+      }
+      const waitingKeys=new Set(items.filter(item=>item.phase==='queued').map(item=>item.key));
+      for(const key of flowWaitStarts.keys())if(!waitingKeys.has(key))flowWaitStarts.delete(key);
+      for(const [key,flight] of flowFlights)if(flight.until<=now||!items.some(item=>item.key===flight.key))flowFlights.delete(key);
+      while(flowSeen.size>512)flowSeen.delete(flowSeen.keys().next().value);
+      return items;
+    }
+    function flowCard(item){
+      const waiting=item.phase==='queued';
+      const action=item.jobKey?' data-flow-detail="'+esc(item.jobKey)+'"':item.groupKey?
+        ' data-flow-group="'+esc(item.groupKey)+'" data-flow-child="'+esc(item.childId)+'"':'';
+      const label=(item.kind==='image'?'图片':'文本')+'任务 · '+(waiting?'排队':'推理中');
+      return '<'+(action?'button':'div')+' class="flow-task '+(waiting?'waiting':'working')+'" data-row-key="'+esc(item.key)+'"'+
+        (action?' type="button"'+action:'')+' aria-label="'+label+'">'+flowIcon(item.kind)+'<span>'+(item.kind==='image'?'图片':'文本')+
+        '</span><b data-flow-clock="'+esc(item.key)+'">'+flowClock(Date.now()-item.at)+'</b></'+(action?'button':'div')+'>';
+    }
+    function renderFlow(){
+      if(!flowView)return;
+      flowItems=flowData();
+      const computers=devices.filter(device=>device.role==='self'||device.role==='compute');
+      const chats=devices.filter(device=>device.role!=='self'&&device.role!=='compute');
+      const sources=chats.slice();
+      if(flowItems.some(item=>!item.origin))sources.push({id:'local-source',name:'本机 / 未知来源',ready:true});
+      const width=Math.max(920,(flowView.clientWidth||984)-44),left=300,rowWidth=width-left-18;
+      let top=8;const rows=computers.map(device=>{
+        const calls=flowItems.filter(item=>item.executor===device.id&&item.phase!=='sending');
+        const active=calls.filter(item=>item.phase!=='queued'),waiting=calls.filter(item=>item.phase==='queued').sort((a,b)=>a.at-b.at);
+        const height=Math.max(174,66+Math.max(active.length,waiting.length)*58),row={device,active,waiting,y:top,height};top+=height+32;return row;
+      });
+      const height=Math.max(400,top-24,sources.length*155),center=height/2;
+      const sourceY=new Map(sources.map((source,i)=>[source.id,(i+.5)*height/Math.max(1,sources.length)]));
+      const targetY=new Map(rows.map(row=>[row.device.id,row.y+row.height/2]));
+      const sourcePath=y=>'M92 '+y+'H118Q128 '+y+' 128 '+(y+(y<center?10:-10))+'V'+(center+(y<center?-10:10))+'Q128 '+center+' 138 '+center+'H154';
+      const targetPath=y=>'M218 '+center+'H240Q250 '+center+' 250 '+(center+(y<center?-10:10))+'V'+(y+(y<center?10:-10))+'Q250 '+y+' 260 '+y+'H'+left;
+      const flights=Array.from(flowFlights.values());
+      for(const item of flowItems.filter(item=>item.phase==='sending'))if(!flights.some(flight=>flight.key===item.key))flights.push(item);
+      const activeSource=new Set(flights.map(item=>item.origin||'local-source')),activeTarget=new Set(flights.map(item=>item.executor));
+      const pending=flowItems.filter(item=>!item.executor&&item.phase==='queued');
+      const signature=JSON.stringify({width,computers,sources,items:flowItems,flights:flights.map(item=>[item.key,item.origin,item.executor])});
+      if(signature!==flowSignature){
+        flowSignature=signature;
+        const wires='<svg class="flow-wires" viewBox="0 0 '+width+' '+height+'" aria-hidden="true"><defs><marker id="flow-arrow" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="m1 1 5 3-5 3" fill="none" stroke="context-stroke" stroke-width="1.6"/></marker></defs>'+
+          sources.map(source=>'<path class="flow-wire '+(activeSource.has(source.id)?'active':'')+'" d="'+sourcePath(sourceY.get(source.id))+'" marker-end="url(#flow-arrow)"/>').join('')+
+          rows.map(row=>'<path class="flow-wire '+(activeTarget.has(row.device.id)?'active':'')+'" d="'+targetPath(targetY.get(row.device.id))+'" marker-end="url(#flow-arrow)"/>').join('')+'</svg>';
+        const phones=sources.map(source=>'<div class="flow-phone" data-row-key="source:'+esc(source.id)+'" style="top:'+(sourceY.get(source.id)-45)+'px"><svg aria-hidden="true"><use href="#flow-phone"/></svg><span>'+esc(source.id==='local-source'?'本机 / 未知来源':publicJobName(source.name,'chat'))+'</span></div>').join('');
+        const router='<div class="flow-router '+(flights.length?'active':'')+'" style="top:'+(center-26)+'px"><svg aria-hidden="true" viewBox="0 0 48 36"><rect x="2" y="13" width="10" height="10" rx="2"/><rect x="35" y="2" width="10" height="10" rx="2"/><rect x="35" y="24" width="10" height="10" rx="2"/><path d="M12 18h9q4 0 4-4v-3q0-4 4-4h6M21 18q4 0 4 4v3q0 4 4 4h6"/></svg><span>路由层</span></div>';
+        const boxes=rows.map(row=>{
+          const d=row.device,mem=typeof d.memUsage==='number'&&Number.isFinite(d.memUsage)&&d.memUsage>=0?Math.min(100,d.memUsage):null;
+          const memory='<div class="flow-memory" aria-label="内存 '+(mem===null?'未采集':mem+'%')+'"><i><em style="width:'+(mem===null?0:mem)+'%;background:'+(mem>50?'#e1b43b':'#279a73')+'"></em></i><span>内存<b>'+(mem===null?'—':Math.round(mem)+'%')+'</b></span></div>';
+          return '<section class="flow-compute" data-row-key="compute:'+esc(d.id)+'" style="left:'+left+'px;top:'+row.y+'px;width:'+rowWidth+'px;min-height:'+row.height+'px" aria-label="'+esc(d.name)+'"><div class="flow-computer"><svg aria-hidden="true"><use href="#flow-pc"/></svg><span>'+esc(publicJobName(d.name,'compute'))+'</span>'+memory+(!d.ready?'<small>连接中</small>':'')+'</div><div class="flow-lane"><h3>推理中</h3>'+row.active.map(flowCard).join('')+(!row.active.length?'<span class="flow-idle">'+(d.jobs>0?'设备忙碌 · 无任务明细':'空闲')+'</span>':'')+'</div><div class="flow-lane queue"><h3>排队</h3>'+row.waiting.map(flowCard).join('')+(!row.waiting.length?'<span class="flow-idle">暂无排队</span>':'')+'</div></section>';
+        }).join('');
+        const packets=flights.filter(item=>targetY.has(item.executor)).map(item=>{
+          const y=sourceY.get(item.origin||'local-source')||center;
+          const route=sourcePath(y)+'L218 '+center+targetPath(targetY.get(item.executor)).replace(/^M218 [^H]+/,'');
+          return '<div class="flow-packet" data-row-key="packet:'+esc(item.key)+'" aria-label="'+(item.kind==='image'?'图片':'文本')+'任务正在分派" style="offset-path:path(\''+route+'\')">'+flowIcon(item.kind)+'</div>';
+        }).join('');
+        renderMarkup(flowView,'<div class="flow-labels" data-row-key="labels"><span>任务发起</span><span>路由分发</span><span>算力执行</span></div><div class="flow-scene" data-row-key="scene" style="width:'+width+'px;height:'+height+'px">'+wires+phones+router+boxes+packets+(!computers.length?'<div class="flow-empty">等待算力设备上线</div>':'')+'</div>'+
+          (pending.length?'<section class="flow-pending" data-row-key="pending"><h3>等待分配</h3><div>'+pending.sort((a,b)=>a.at-b.at).map(flowCard).join('')+'</div></section>':''));
+      }
+      updateFlowClocks();
+    }
+    function updateFlowClocks(){
+      if(!flowView||!flowView.querySelectorAll)return;
+      const times=new Map(flowItems.map(item=>[item.key,item.at]));
+      for(const element of flowView.querySelectorAll('[data-flow-clock]')){
+        const at=times.get(element.getAttribute('data-flow-clock'));if(at!==undefined)element.textContent=flowClock(Date.now()-at);
+      }
+    }
+    function setTaskView(value){
+      taskView=value==='history'?'history':'flow';
+      if(flowView)flowView.hidden=taskView!=='flow';
+      if(historyControls)historyControls.hidden=taskView!=='history';
+      historyView.hidden=taskView!=='history';if(taskCountView)taskCountView.hidden=taskView!=='history';
+      if(viewSwitch&&viewSwitch.querySelectorAll)for(const button of viewSwitch.querySelectorAll('[data-task-view]'))button.setAttribute('aria-pressed',String(button.getAttribute('data-task-view')===taskView));
+      renderFlow();
+    }
+    if(viewSwitch)viewSwitch.addEventListener('click',event=>{const button=event.target.closest('[data-task-view]');if(button)setTaskView(button.getAttribute('data-task-view'));});
+    if(flowView)flowView.addEventListener('click',event=>{
+      const button=event.target.closest('[data-flow-detail],[data-flow-group]');if(!button)return;
+      detailKey=button.getAttribute('data-flow-detail')||'';detailGroupKey=button.getAttribute('data-flow-group')||'';detailChildId=button.getAttribute('data-flow-child')||'';
+      detailTab='output';detailTrigger=button;renderDetail(true);if(detailView)focusWithoutScroll(detailView.querySelector('[data-close]'));
+    });
+
     function renderStats(){
       if(!statsView)return;
       const chats=devices.filter(device=>device.role!=='self'&&device.role!=='compute').length;
       statsView.innerHTML='<div class="stat"><span>聊天机</span><b>'+chats+'</b></div>'+
-        '<div class="stat"><span>本机推理中</span><b>'+running+'</b></div>';
+        '<div class="stat"><span>本机推理中</span><b>'+running+'</b></div>'+
+        '<div class="stat"><span>集群推理中</span><b>'+flowItems.filter(item=>item.phase!=='queued'&&item.phase!=='sending').length+'</b></div>'+
+        '<div class="stat"><span>排队</span><b>'+flowItems.filter(item=>item.phase==='queued').length+'</b></div>'+
+        '<div class="stat"><span>发送中</span><b>'+flowItems.filter(item=>item.phase==='sending').length+'</b></div>';
     }
     let devicesCollapsed=false;
     try{devicesCollapsed=localStorage.getItem('devicesCollapsed')==='1';}catch(error){}
@@ -674,7 +828,7 @@
         const heat=compute?formatHeat(device.batteryTemp, device.thermalLevel):'';
         const cpu=compute&&typeof device.cpuUsage==='number'&&device.cpuUsage>=0?device.cpuUsage:-1;
         const bar=(kind,label,value)=>value<0?'<span class="bar '+kind+'"></span>':
-          '<span class="bar '+kind+'">'+label+' <i><b style="width:'+Math.min(100,value)+'%"></b></i>'+value+'%</span>';
+          '<span class="bar '+kind+'">'+label+' <i><b style="width:'+Math.min(100,value)+'%;'+(kind==='mem'?'background:'+(value>50?'#e1b43b':'#279a73'):'')+'"></b></i>'+value+'%</span>';
         const tier=typeof device.modelTier==='number'&&(device.modelTier===1||device.modelTier===2)?device.modelTier:0;
         const details=compute?'<div class="meta"><span class="model">'+esc(labeledModel(device.model))+(tier?' · T'+tier:'')+'</span>'+
           '<span class="heat">'+(heat?esc(heat):'')+'</span>'+
@@ -910,7 +1064,7 @@
       const button=Array.from(historyView.querySelectorAll('[data-detail]')).find(item=>item.getAttribute('data-detail')===key);
       if(button)focusWithoutScroll(button);
     }
-    function render(){renderStats();renderDevices();renderJobs();updateButton();}
+    function render(){renderFlow();renderStats();renderDevices();renderJobs();updateButton();}
     historyView.addEventListener('click',event=>{
       const collapse=event.target.closest('[data-collapse]');
       if(collapse){const key=collapse.getAttribute('data-collapse');
@@ -1006,6 +1160,8 @@
         devices=event.devices||[];
         jobs=event.jobs||[];
         remoteCalls=event.remoteCalls||[];
+        queuedCalls=event.queuedCalls||[];
+        mirroredCalls=event.flowCalls||[];
         groups=event.groups||[];
         running=typeof event.running==='number'?event.running:jobs.filter(job=>job.running).length;
         render();return;
@@ -1026,6 +1182,7 @@
         dirty=true;
       }
       if(dirty)renderJobs();
+      renderFlow();renderStats();
     },400);
     render();
   </script>

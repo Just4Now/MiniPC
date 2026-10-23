@@ -43,5 +43,13 @@ function test(name, body) { body(); passed++; console.log('PASS ' + name); }
   await assert.rejects(client.complete('中文'), /6\/4 bytes/);
   assert.equal(sent.length, 0); assert.equal(client.calls.size, 0);
   passed++; console.log('PASS oversize UTF-8 input rejected before request state/send');
+  test('retry waiting sends display-only queue and cancellation notices without image payloads', () => {
+    const state={requestId:'queue-test',epoch:0,firstStarted:Date.now()-3000,queuedSince:Date.now()-2000,
+      waiting:false,timer:null,retryTimer:null,hooks:{},image:'PRIVATE IMAGE',prompt:'PRIVATE PROMPT'};
+    client.wait(state);
+    const queued=sent.at(-1);assert.equal(queued.source,'queue-display');assert.equal(queued.state,'queued');
+    assert(Number(queued.text)>=2000);assert(!JSON.stringify(queued).includes('PRIVATE'));
+    client.fail(state,'cancelled');assert.equal(sent.at(-1).state,'cleared');assert.equal(client.waitingCalls.length,0);
+  });
   console.log(passed + ' tests passed');
 })().catch(error => {console.error(error); process.exitCode = 1;});

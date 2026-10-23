@@ -73,6 +73,7 @@ class StreamState {
   timer: number = -1;
   /** Refused before acceptance; a retry timer owns the request until it is re-sent. */
   waiting: boolean = false;
+  queuedSince: number = 0;
   retryTimer: number = -1;
 }
 
@@ -372,6 +373,7 @@ class InferenceClient {
       this.fail(state, '算力端版本不支持');
       return false;
     }
+    if (state.waiting) this.publishWaiting(state, false);
     if (state.requestId.length > 0) {
       this.calls.delete(state.requestId);
     }
@@ -636,12 +638,24 @@ class InferenceClient {
   private wait(state: StreamState): void {
     clearTimeout(state.timer);
     state.waiting = true;
+    if (state.queuedSince === 0) state.queuedSince = Date.now();
     this.calls.delete(state.requestId);
     clearTimeout(state.retryTimer);
     state.retryTimer = setTimeout(() => {
       this.resend(state);
     }, RETRY_INTERVAL_MS);
     this.waitingCalls.push(state);
+    this.publishWaiting(state, true);
+  }
+
+  /** Small optional display notice; old compute builds safely ignore it. */
+  private publishWaiting(state: StreamState, queued: boolean): void {
+    if (state.requestId.length === 0 || state.epoch < 0) return;
+    try {
+      nearbyChannel.send({ type: 'infer.status', version: 2, requestId: state.requestId,
+        source: 'queue-display', state: queued ? 'queued' : 'cleared',
+        text: String(Math.max(0, Date.now() - state.queuedSince)) }, state.epoch).catch((): void => {});
+    } catch (_) { /* Display delivery never changes retry/cancellation behavior. */ }
   }
 
   private retryWaiting(): void {
@@ -662,6 +676,7 @@ class InferenceClient {
     this.waitingCalls.splice(index, 1);
     clearTimeout(state.retryTimer);
     if (Date.now() - state.firstStarted >= BUSY_WAIT_MS) {
+      this.publishWaiting(state, false);
       state.waiting = false;
       state.reject?.(new Error(BUSY_TEXT));
       return;
@@ -692,6 +707,7 @@ class InferenceClient {
     if (!live && !state.waiting) {
       return;
     }
+    if (state.waiting) this.publishWaiting(state, false);
     this.calls.delete(state.requestId);
     state.waiting = false;
     clearTimeout(state.timer);
