@@ -28,13 +28,14 @@ test('only preparation and execution keep the timer active', () => {
 // Execute the native component's actual lifecycle methods with a controlled clock.
 function cardHarness() {
   const source = fs.readFileSync(path.join(root, 'ui/TaskProgressCard.ets'), 'utf8');
-  const lines = source.split('\n');
+  const lines = source.split(/\r?\n/);
   const names = ['aboutToAppear', 'aboutToDisappear', 'clearTimer', 'updateElapsed', 'syncTimer'];
   const methods = names.map(name => {
     const start = lines.findIndex(line => line.startsWith('  ' + name + '(') || line.startsWith('  private ' + name + '('));
     assert.ok(start >= 0);
     let end = start + 1;
-    while (lines[end] !== '  }') end++;
+    while (end < lines.length && lines[end] !== '  }') end++;
+    assert.ok(end < lines.length, 'Missing method terminator: ' + name);
     return lines.slice(start, end + 1).join('\n');
   });
   let now = 10000, nextId = 0;
