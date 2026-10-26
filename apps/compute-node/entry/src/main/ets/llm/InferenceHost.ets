@@ -18,6 +18,8 @@ const MIN_WAIT_SECONDS = 10;
 
 /** Mirrors one accepted infer request onto the compute task rail. */
 export class InferCardHooks {
+  phase: (requestId: string, epoch: number, phase: string) => void =
+    (_requestId: string, _epoch: number, _phase: string): void => {};
   metrics: (requestId: string, epoch: number, metrics: InferenceMetrics) => void =
     (_requestId: string, _epoch: number, _metrics: InferenceMetrics): void => {};
   begin: (requestId: string, epoch: number, prompt: string, label: string) => void =
@@ -266,6 +268,9 @@ export class InferenceHost implements RelayLocal {
       }
     } catch (_error) {
       error = '无法启动模型，请确认模型文件已部署。';
+    }
+    if (error.length === 0) {
+      try { this.card.phase(requestId, epoch, 'running'); } catch (_) { /* display only */ }
     }
     if (error.length > 0) {
       this.finishError(request, 'MODEL_EXECUTION_FAILED', error, true);

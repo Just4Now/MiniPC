@@ -281,6 +281,35 @@ function scan(t) {
 }
 
 (async () => {
+  // Run the real assembler AND the channel's 1s watchdog during a slow upload.
+  for (const [name, dir] of [['compute', undefined], ['chat', require('node:path').resolve(__dirname, '../../../../../../../apps/agent-client/entry/src/main/ets/nearby')]]) {
+    const t = build(name === 'compute', 'slow-upload-' + name, dir), listeners = new Map(), seen = [];
+    const link = { on(event, fn) { listeners.set(event, fn); }, sendData() {},
+      disconnect() { this.closed = true; }, close() { this.closed = true; }, getPeerDeviceId() { return 'slow-peer'; } };
+    const peer = t.channel.attach(link, 'slow-peer', true);
+    peer.role = 'compute'; t.channel.ready(peer);
+    t.channel.onMessage = message => seen.push(message);
+    t.channel.onInference = message => seen.push(message);
+    const payload = { type: 'infer.request', version: 2, requestId: 'slow', prompt: 'PRIVATE-' + 'x'.repeat(10800) };
+    const parts = t.modules.protocol.encodeMessage(payload, 'slow-upload');
+    for (const part of parts) {
+      listeners.get('dataReceived')(new Uint8Array(Buffer.from(part)).buffer);
+      await advance(900);
+      assert(!link.closed, 'continuous progress must survive the channel watchdog beyond 15s');
+    }
+    assert.equal(seen[0].prompt, payload.prompt);
+    const logs = t.logs.filter(log => String(log.args[2]).startsWith('le-frame-recv'));
+    assert.equal(logs.length, parts.length, 'every newly received fragment has metadata diagnostics');
+    assert(!JSON.stringify(t.logs).includes(payload.prompt), 'logs never contain inference payloads');
+    // A different incomplete message with no further progress still tears down cleanly.
+    const stalled = t.modules.protocol.encodeMessage(payload, 'stalled-upload');
+    listeners.get('dataReceived')(new Uint8Array(Buffer.from(stalled[0])).buffer);
+    await advance(16000);
+    assert(link.closed, 'stalled fragments remain bounded and are cleaned up');
+    assert(t.logs.some(log => String(log.args[2]).startsWith('le-frame-timeout')));
+    t.channel.disconnect();
+  }
+
   for (const [name,dir] of [['compute',undefined],['chat',require('node:path').resolve(__dirname,'../../../../../../../apps/agent-client/entry/src/main/ets/nearby')]]) {
     const t=build(name==='compute','background-'+name,dir),activity=[],frames=[];
     t.channel.setActivityListener(active=>activity.push(active));

@@ -318,10 +318,13 @@ export function validMessage(m: WireMessage): boolean {
 const CHUNK_BYTES = 480;
 const MAX_PARTS = Math.ceil(MAX_FRAME / CHUNK_BYTES);
 const MAX_PENDING = 8;
+// Only NEW fragments renew the idle budget. Keep an absolute bound against drip feeds.
 const FRAGMENT_TIMEOUT = 15000;
+const FRAGMENT_MAX_DURATION = 120000;
 interface Fragment { version: number; id: string; index: number; count: number; data: string; }
 class PendingMessage {
   created: number = Date.now();
+  progressed: number = this.created;
   count: number;
   bytes: number = 0;
   parts: Map<number, Uint8Array> = new Map();
@@ -424,7 +427,17 @@ export function encodeMessage(message: WireMessage, id: string): string[] {
   return output;
 }
 
+/** Metadata only: never expose fragment bytes or inference input to diagnostics. */
+export interface FragmentReceipt {
+  id: string; index: number; count: number; received: number; bytes: number;
+  elapsedMs: number; gapMs: number;
+}
+
 export class MessageAssembler {
+  private fragmentObserver: ((receipt: FragmentReceipt) => void) | null = null;
+
+  setFragmentObserver(observer: (receipt: FragmentReceipt) => void): void { this.fragmentObserver = observer; }
+
   private pending: Map<string, PendingMessage> = new Map();
   // Session-local replay window; clear on disconnect. No timers apply to inference.
   private completed: string[] = [];
@@ -433,9 +446,15 @@ export class MessageAssembler {
 
   checkExpiry(): void {
     for (const entry of this.pending) {
-      if (Date.now() - entry[1].created >= FRAGMENT_TIMEOUT) {
+      const pending = entry[1];
+      const age = Date.now() - pending.created;
+      const idle = Date.now() - pending.progressed;
+      if (idle >= FRAGMENT_TIMEOUT || age >= FRAGMENT_MAX_DURATION) {
+        const reason = 'Incomplete chat fragments timed out id=' + entry[0] +
+          ' received=' + pending.parts.size.toString() + '/' + pending.count.toString() +
+          ' bytes=' + pending.bytes.toString() + ' ageMs=' + age.toString() + ' idleMs=' + idle.toString();
         this.clear();
-        throw new Error('Incomplete chat fragments timed out');
+        throw new Error(reason);
       }
     }
   }
@@ -472,8 +491,14 @@ export class MessageAssembler {
       if (new util.Base64Helper().encodeToStringSync(previous) !== fragment.data) throw new Error('Conflicting duplicate fragment');
       return null;
     }
+    const gap = Date.now() - pending.progressed;
     pending.parts.set(fragment.index, bytes);
+    pending.progressed = Date.now();
     pending.bytes += bytes.length;
+    try {
+      this.fragmentObserver?.({ id: fragment.id, index: fragment.index, count: fragment.count,
+        received: pending.parts.size, bytes: pending.bytes, elapsedMs: Date.now() - pending.created, gapMs: gap });
+    } catch (_) { /* Diagnostics must never interrupt delivery. */ }
     if (pending.bytes > MAX_FRAME) throw new Error('Chat message exceeds 64 KiB');
     if (pending.parts.size !== pending.count) return null;
     const joined = new Uint8Array(pending.bytes);

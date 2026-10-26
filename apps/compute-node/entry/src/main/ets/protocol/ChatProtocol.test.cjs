@@ -220,3 +220,50 @@ const prepared = { protocol: 'nearby-chat-v1', type: 'prepared', requestId: 'r' 
 assert(validMessage({ ...prepared, error: 'x'.repeat(2048) }));
 for (const error of [null, 1, {}, 'x'.repeat(2049)]) assert(!validMessage({ ...prepared, error }));
 console.log('PASS: prepare/prepared schema and roundtrip, required bounded requestId, optional bounded error');
+
+// Slow-but-progressing uploads must survive both endpoints' receive watchdogs.
+for (const relative of ['./ChatProtocol.ets', '../../../../../../agent-client/entry/src/main/ets/protocol/ChatProtocol.ets']) {
+  const env = { ...context, exports: {} };
+  vm.runInNewContext(transpile(__dirname + '/' + relative), env);
+  const p = env.exports;
+  const payload = { type: 'infer.request', version: 2, requestId: 'slow', prompt: 'x'.repeat(10800) };
+  const chunks = p.encodeMessage(payload, 'slow');
+  now = 0;
+  const slow = new p.MessageAssembler(), receipt = [];
+  slow.setFragmentObserver(part => receipt.push(part));
+  let decoded;
+  for (let i = 0; i < chunks.length; i++) { now = i * 900; decoded = slow.receive(chunks[i]); slow.checkExpiry(); }
+  assert.equal(decoded.prompt, payload.prompt, 'continuous ~20s upload succeeds');
+  assert.equal(receipt.length, chunks.length);
+  assert.equal(receipt.at(-1).received, chunks.length);
+  assert.equal(receipt.at(-1).gapMs, 900);
+  assert.equal(receipt.at(-1).elapsedMs, (chunks.length - 1) * 900);
+  assert(!JSON.stringify(receipt).includes(payload.prompt), 'diagnostics contain metadata only');
+  now += 200000;
+  assert.doesNotThrow(() => slow.checkExpiry(), 'completed transfers have no inference timeout');
+
+  now = 0;
+  const duplicate = new p.MessageAssembler(); duplicate.receive(chunks[0]);
+  now = 14000; duplicate.receive(chunks[0]);
+  duplicate.receive(p.encodeMessage({ type: 'hello' }, 'other')[0]);
+  now = 15000;
+  assert.throws(() => duplicate.checkExpiry(), /received=1\/23.*idleMs=15000/,
+    'duplicate frames and unrelated messages never renew progress');
+
+  now = 0;
+  const drip = new p.MessageAssembler();
+  const long = p.encodeMessage({ ...payload, prompt: 'x'.repeat(32000) }, 'drip');
+  for (let i = 0; i < 60; i++) { now = i * 2000; drip.receive(long[i]); }
+  now = 120000;
+  assert.throws(() => drip.receive(long[60]), /ageMs=120000/, 'total upload duration remains bounded');
+
+  now = 0;
+  const isolated = new p.MessageAssembler(); isolated.receive(chunks[0]);
+  const other = p.encodeMessage(payload, 'second');
+  now = 10000; isolated.receive(other[0]);
+  now = 15000; assert.throws(() => isolated.checkExpiry(), /id=slow/, 'progress is per message');
+  const noisy = new p.MessageAssembler(); noisy.setFragmentObserver(() => { throw new Error('diagnostic sink'); });
+  for (const chunk of chunks) decoded = noisy.receive(chunk);
+  assert.equal(decoded.prompt, payload.prompt, 'logging failures cannot interrupt delivery');
+}
+console.log('PASS slow transfers, progress-only renewal, duplicate/other-message isolation, absolute bounds, metadata diagnostics on both endpoints');

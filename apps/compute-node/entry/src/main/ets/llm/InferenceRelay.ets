@@ -17,6 +17,8 @@ export interface RelayLocal {
 
 /** Task-card observers for requests that run on another device. */
 export class RelayEvents {
+  phase: (requestId: string, chatEpoch: number, phase: string) => void =
+    (_requestId: string, _chatEpoch: number, _phase: string): void => {};
   metrics: (requestId: string, chatEpoch: number, metrics: InferenceMetrics) => void =
     (_requestId: string, _chatEpoch: number, _metrics: InferenceMetrics): void => {};
   begin: (requestId: string, chatEpoch: number, workerEpoch: number, messages: ChatMessage[], label: string) => void =
@@ -129,11 +131,15 @@ export class InferenceRelay {
     }
     if (message.type === 'infer.accepted') {
       entry.accepted = true;
+      this.events.phase(origin, entry.originEpoch, message.state === 'queued' ? 'queued' : 'running');
       this.toChat({ type: 'infer.accepted', version: 2, requestId: origin, state: message.state,
         device: entry.workerName }, entry);
       return;
     }
     if (message.type === 'infer.status') {
+      if (['queued', 'preparing', 'loading', 'prefill', 'generating'].includes(message.state || '')) {
+        this.events.phase(origin, entry.originEpoch, message.state === 'queued' ? 'queued' : 'running');
+      }
       this.toChat({ type: 'infer.status', version: 2, requestId: origin, state: message.state }, entry);
       return;
     }
@@ -272,6 +278,11 @@ export class InferenceRelay {
     this.sender(forwarded, target.epoch).then((sent: boolean): void => {
       if (!sent) this.forwardFailed(dispatch);
     }).catch((_error: Error): void => this.forwardFailed(dispatch));
+    // This is hub admission, not worker execution. It stops the chat's upload-only
+    // timeout while the second hop is still in flight. Never mark entry.accepted here:
+    // worker-loss/reissue safety continues to depend on the worker's own reply.
+    this.toChat({ type: 'infer.accepted', version: 2, requestId: id, state: 'queued',
+      device: target.label }, dispatch);
     this.publishLoad();
   }
 

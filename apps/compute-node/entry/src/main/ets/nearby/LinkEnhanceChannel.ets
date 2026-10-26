@@ -5,7 +5,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { connection as btConnection, ble } from '@kit.ConnectivityKit';
 import { util } from '@kit.ArkTS';
-import { encodeMessage, MessageAssembler, WireMessage, DeviceInfoEntry } from '../protocol/ChatProtocol';
+import { encodeMessage, MessageAssembler, FragmentReceipt, WireMessage, DeviceInfoEntry } from '../protocol/ChatProtocol';
 import { COMPUTE_ADV_KEY_BYTES, COMPUTE_ADV_TYPE, COMPUTE_MANUFACTURE_ID, IS_SERVER } from './NearbyConfig';
 import { RankMember, freezeComputeRank, freezeNameRank, rankNames, slotOf } from '../cluster/ClusterRoster';
 
@@ -1806,6 +1806,10 @@ export class LinkEnhanceChannel {
     const peer = new Peer(++this.epoch, peerId, incoming, fromServer);
     peer.advertisedSlot = advertisedSlot;
     this.peers.push(peer);
+    peer.assembler.setFragmentObserver((part: FragmentReceipt): void => {
+      hilog.info(0, 'NearbyChat', 'le-frame-recv epoch=%{public}d id=%{public}s index=%{public}d count=%{public}d received=%{public}d bytes=%{public}d elapsedMs=%{public}d gapMs=%{public}d',
+        peer.epoch, part.id, part.index, part.count, part.received, part.bytes, part.elapsedMs, part.gapMs);
+    });
     incoming.on('disconnected', (reason: number) => {
       hilog.info(0, 'NearbyChat',
         'le-disconnect epoch=%{public}d role=%{public}s activeJobs=%{public}d peer=%{public}s reason=%{public}d',
@@ -1820,14 +1824,22 @@ export class LinkEnhanceChannel {
         const message = peer.assembler.receive(text);
         if (message !== null) this.receive(peer, message);
       } catch (error) {
-        hilog.warn(0, 'NearbyChat', 'le-recv invalid epoch=%{public}d', peer.epoch);
+        const detail = (error as Error).message || '';
+        const safe = detail.indexOf('Incomplete chat fragments timed out id=') === 0 ? detail :
+          (['Fragment exceeds limit', 'Malformed chat fragment', 'Invalid fragment payload',
+            'Conflicting fragment count', 'Conflicting duplicate fragment', 'Too many incomplete chat messages',
+            'Chat message exceeds 64 KiB', 'Missing chat fragment', 'Invalid chat message'].includes(detail) ? detail : 'decode failed');
+        hilog.warn(0, 'NearbyChat', 'le-recv invalid epoch=%{public}d reason=%{public}s', peer.epoch, safe);
         this.drop(peer, '收到无效消息，连接已结束。');
       }
     });
     peer.timer = setTimeout(() => this.drop(peer, '连接超时，请确认两端应用在前台后重试。'), 20000);
     peer.fragmentTimer = setInterval(() => {
       try { peer.assembler.checkExpiry(); }
-      catch (_) { this.drop(peer, '消息传输中断，请重新连接。'); }
+      catch (error) {
+        hilog.warn(0, 'NearbyChat', 'le-frame-timeout epoch=%{public}d reason=%{public}s', peer.epoch, (error as Error).message);
+        this.drop(peer, '消息传输中断，请重新连接。');
+      }
       // 息屏静默回收兜底：系统回收链路可能不派发断开事件（真机实测，三台
       // 组网卡死两小时的直接原因之一）。compute 链路每 ~2s 有 deviceInfo
       // 往来，ready 后 45s 无任何帧即可判定链路已死，清掉才能重拨；chat
@@ -2019,15 +2031,23 @@ export class LinkEnhanceChannel {
       return Promise.resolve(false);
     }
     let frames: string[];
-    try { frames = encodeMessage(message, String(peer.epoch) + '-' + String(++peer.sequence)); }
+    const fragmentId = String(peer.epoch) + '-' + String(++peer.sequence);
+    try { frames = encodeMessage(message, fragmentId); }
     catch (_) { this.drop(peer, '消息格式或长度超出限制。'); return Promise.resolve(false); }
     hilog.info(0, 'NearbyChat', 'le-send type=%{public}s epoch=%{public}d peer=%{public}s frames=%{public}d',
       message.type, peer.epoch, peer.peerId, frames.length);
     ++peer.pending;
+    const enqueuedAt = Date.now();
     peer.writes = peer.writes.then(async (): Promise<boolean> => {
+      const startedAt = Date.now();
+      hilog.info(0, 'NearbyChat', 'le-write-start type=%{public}s request=%{public}s epoch=%{public}d id=%{public}s count=%{public}d queueMs=%{public}d',
+        message.type, message.requestId || '', peer.epoch, fragmentId, frames.length, startedAt - enqueuedAt);
       try {
-        for (const frame of frames) {
-          if (!await this.sendFrame(peer, frame)) return false;
+        for (let index = 0; index < frames.length; index++) {
+          if (!await this.sendFrame(peer, frames[index])) return false;
+          // sendData returning means submitted to the SDK, not delivered to the peer.
+          hilog.info(0, 'NearbyChat', 'le-frame-submit epoch=%{public}d id=%{public}s index=%{public}d count=%{public}d bytes=%{public}d elapsedMs=%{public}d',
+            peer.epoch, fragmentId, index, frames.length, toBuffer(frames[index]).byteLength, Date.now() - startedAt);
         }
         return this.holds(peer);
       } finally { --peer.pending; }

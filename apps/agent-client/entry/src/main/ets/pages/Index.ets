@@ -39,6 +39,8 @@ import { nearbyChannel } from '../nearby/LinkEnhanceChannel';
 import { inferenceClient, INFERENCE_STOPPED } from '../model/InferenceClient';
 import { TaskChildSnapshot, TaskSnapshot } from '../protocol/ChatProtocol';
 import { TaskReporter } from '../model/TaskReporter';
+import { TaskProgress, TaskProgressPhase, taskProgressActive } from '../model/TaskProgress';
+import { TaskProgressCard } from '../ui/TaskProgressCard';
 import { RemoteComputeModel } from '../model/RemoteComputeModel';
 import { ChatMode, loadChatMode, saveChatMode } from '../model/ChatModeStore';
 import { buildPlainChatPrompt } from '../model/PlainChat';
@@ -156,7 +158,8 @@ enum BubbleKind {
   TOOL,
   OBSERVATION,
   ERROR,
-  PROCESS
+  PROCESS,
+  TASK
 }
 
 interface ChatBubble {
@@ -168,6 +171,7 @@ interface ChatBubble {
   collapsible: boolean;
   expanded: boolean;
   revision: number;
+  taskProgress?: TaskProgress;
 }
 
 function bubbleBackground(kind: BubbleKind): string {
@@ -295,6 +299,7 @@ struct Index {
   private activeRunner: ReActAgentRunner | null = null;
   private activeParallel: ParallelTaskRunner | null = null;
   private activeTaskReporter: TaskReporter | null = null;
+  private activeTaskProgressId: number = -1;
   private parallelHeader: string = '';
   private parallelViews: SubtaskView[] = [];
   private stopRequested: boolean = false;
@@ -326,6 +331,7 @@ struct Index {
   }
 
   aboutToDisappear(): void {
+    this.updateTaskProgress('cancelled');
     this.pageActive = false;
     this.remoteRunGeneration++;
     this.stopRequested = true;
@@ -543,7 +549,14 @@ struct Index {
 
           ForEach(this.messages, (bubble: ChatBubble) => {
             Row() {
-              if (bubble.kind === BubbleKind.PROCESS) {
+              if (bubble.kind === BubbleKind.TASK && bubble.taskProgress !== undefined) {
+                Column() {
+                  TaskProgressCard({ progress: bubble.taskProgress })
+                }
+                .width('100%')
+                .constraintSize({ maxWidth: 440 })
+                .alignItems(HorizontalAlign.Start)
+              } else if (bubble.kind === BubbleKind.PROCESS) {
                 Column() {
                   Text(bubble.expanded ? '▾ 思考和行动' : '▸ 思考和行动')
                     .fontSize(14)
@@ -598,6 +611,9 @@ struct Index {
             .width('100%')
             .justifyContent(bubble.kind === BubbleKind.USER ? FlexAlign.End : FlexAlign.Start)
             .margin({ bottom: 10 })
+            // The task card already represents waiting; keep detailed parallel progress visible.
+            .visibility(bubble.id === this.liveReplyId && this.liveReplyPending && this.parallelHeader.length === 0 ?
+              Visibility.None : Visibility.Visible)
           }, (bubble: ChatBubble) => `${bubble.id}-${bubble.revision}`)
         }
         .width('100%')
@@ -1193,42 +1209,52 @@ struct Index {
     if (!this.isCurrentRemoteRun(generation)) { return false; }
     nearbyChannel.initialize(this.getAbilityContext());
     nearbyChannel.resume();
-    if (nearbyChannel.isConnected()) {
-      this.refreshLinkChrome();
-      return true;
-    }
     this.linkBusy = true;
     this.refreshLinkChrome();
     try {
-      await nearbyChannel.prepare();
+      if (!nearbyChannel.isConnected()) {
+        await nearbyChannel.prepare();
+        if (!this.isCurrentRemoteRun(generation)) { return false; }
+        await nearbyChannel.computeDevices();
+        if (!this.isCurrentRemoteRun(generation)) { return false; }
+        let ads = nearbyChannel.advertisedComputes();
+        if (ads.length === 0) {
+          this.remoteStatus = nearbyChannel.hasComputeHits()
+            ? '附近的算力还没组网。请用同一华为账号在超级终端中连接后再试。'
+            : '未发现算力设备。请打开算力手机并保持近场开启后重试。';
+          return false;
+        }
+        ads = nearbyChannel.connectComputes();
+        if (ads.length === 0) {
+          this.remoteStatus = '算力设备1尚未确定或不可用，请等待算力设备组网后重试。';
+          return false;
+        }
+        const operation = nearbyChannel.operation();
+        await nearbyChannel.connectAdvertiser(ads[0].mac, operation);
+        if (!this.isCurrentRemoteRun(generation)) { return false; }
+        const connected = await nearbyChannel.waitUntilConnected();
+        if (!this.isCurrentRemoteRun(generation)) { return false; }
+        if (!connected) {
+          this.remoteStatus = nearbyChannel.getStatus();
+          return false;
+        }
+        const serviceError = await nearbyChannel.checkService();
+        if (!this.isCurrentRemoteRun(generation)) { return false; }
+        if (serviceError.length > 0) {
+          this.remoteStatus = serviceError;
+          return false;
+        }
+      }
+      // A ready link is not yet a ready model. Negotiate on connection as well as
+      // first send; ensureReady coalesces callers and reuses the current profile.
+      const negotiate = await inferenceClient.ensureReady();
       if (!this.isCurrentRemoteRun(generation)) { return false; }
-      await nearbyChannel.computeDevices();
-      if (!this.isCurrentRemoteRun(generation)) { return false; }
-      let ads = nearbyChannel.advertisedComputes();
-      if (ads.length === 0) {
-        this.remoteStatus = nearbyChannel.hasComputeHits()
-          ? '附近的算力还没组网。请用同一华为账号在超级终端中连接后再试。'
-          : '未发现算力设备。请打开算力手机并保持近场开启后重试。';
+      if (negotiate.length > 0) {
+        this.remoteStatus = negotiate;
         return false;
       }
-      ads = nearbyChannel.connectComputes();
-      if (ads.length === 0) {
-        this.remoteStatus = '算力设备1尚未确定或不可用，请等待算力设备组网后重试。';
-        return false;
-      }
-      const operation = nearbyChannel.operation();
-      await nearbyChannel.connectAdvertiser(ads[0].mac, operation);
-      if (!this.isCurrentRemoteRun(generation)) { return false; }
-      const connected = await nearbyChannel.waitUntilConnected();
-      if (!this.isCurrentRemoteRun(generation)) { return false; }
-      if (!connected) {
-        this.remoteStatus = nearbyChannel.getStatus();
-        return false;
-      }
-      const serviceError = await nearbyChannel.checkService();
-      if (!this.isCurrentRemoteRun(generation)) { return false; }
-      if (serviceError.length > 0) {
-        this.remoteStatus = serviceError;
+      if (!nearbyChannel.isConnected()) {
+        this.remoteStatus = '连接已中断，请重新连接。';
         return false;
       }
       this.remoteStatus = '算力已连接';
@@ -1287,6 +1313,8 @@ struct Index {
     let finalPartial = false;
     let failureText = '';
     const startedAt = Date.now();
+    this.appendUserMessage(display, imagePath);
+    this.beginTaskProgress(imagePath.length > 0 || imagePayload.length > 0 ? '图像' : '文本', startedAt);
     let reporter: TaskReporter | null = null;
     try {
       const ready = await this.ensureRemoteReady(generation);
@@ -1310,7 +1338,7 @@ struct Index {
         Math.floor(Math.random() * 1679616).toString(36), task, startedAt,
         (snapshot: TaskSnapshot): void => inferenceClient.publishTask(snapshot));
       this.activeTaskReporter = reporter;
-      this.appendUserMessage(display, imagePath);
+      this.updateTaskProgress('running');
       if (!useAgent) {
         const prompt = buildPlainChatPrompt(task, inferenceClient.promptBudgetBytes());
         const answer = await inferenceClient.complete(prompt, {
@@ -1442,6 +1470,7 @@ struct Index {
       // A disposed or superseded run must not clear the next run's listeners
       // or persist a late answer. Stop invalidates the generation immediately.
       if (this.pageActive && generation === this.remoteRunGeneration) {
+        this.updateTaskProgress(finalAnswer !== null ? (finalPartial ? 'partial' : 'done') : 'failed');
         this.finishInferenceMetricsTask();
         if (!this.stopRequested && finalAnswer !== null) {
           // A partial report keeps the question for follow-ups but is not a
@@ -1449,8 +1478,6 @@ struct Index {
           this.conversation.addUser(display);
           this.conversation.addAssistant(finalPartial ? PARTIAL_HISTORY_NOTE : finalAnswer);
           saveConversation(this.getAbilityContext(), this.conversation);
-          // Display only: never part of the conversation sent back to the model.
-          this.appendLine('Loop', '本次任务总耗时 ' + this.formatElapsed(Date.now() - startedAt), BubbleKind.OBSERVATION);
         } else {
           this.dropLivePlaceholder();
         }
@@ -1468,11 +1495,34 @@ struct Index {
     }
   }
 
-  private formatElapsed(ms: number): string {
-    const seconds = Math.max(0, ms) / 1000;
-    if (seconds < 60) { return seconds.toFixed(1) + ' 秒'; }
-    const minutes = Math.floor(seconds / 60);
-    return minutes.toString() + ' 分 ' + (seconds - minutes * 60).toFixed(1) + ' 秒';
+  private beginTaskProgress(kind: string, startedAt: number): void {
+    const bubble = this.createChatBubble('Task', '', BubbleKind.TASK);
+    bubble.taskProgress = { kind: kind, phase: 'preparing', startedAt: startedAt, endedAt: 0 };
+    this.activeTaskProgressId = bubble.id;
+    this.messages = [...this.messages, bubble];
+    this.scroller.scrollEdge(Edge.Bottom);
+  }
+
+  private updateTaskProgress(phase: TaskProgressPhase): void {
+    if (this.activeTaskProgressId < 0) { return; }
+    const next: ChatBubble[] = [];
+    for (const bubble of this.messages) {
+      const progress = bubble.taskProgress;
+      if (bubble.id !== this.activeTaskProgressId || progress === undefined || !taskProgressActive(progress.phase)) {
+        next.push(bubble);
+        continue;
+      }
+      next.push({
+        id: bubble.id, speaker: bubble.speaker, text: bubble.text, kind: bubble.kind,
+        imagePath: bubble.imagePath, collapsible: false, expanded: false, revision: bubble.revision + 1,
+        taskProgress: {
+          kind: progress.kind, phase: phase, startedAt: progress.startedAt,
+          endedAt: taskProgressActive(phase) ? 0 : Date.now()
+        }
+      });
+    }
+    this.messages = next;
+    if (!taskProgressActive(phase)) { this.activeTaskProgressId = -1; }
   }
 
   private createParallelRunner(generation: number, tools: ToolRegistry, skillSnapshot: SkillSnapshot): ParallelTaskRunner {
@@ -1560,6 +1610,7 @@ struct Index {
 
   private stopGeneration(): void {
     if (!this.sending) { return; }
+    this.updateTaskProgress('cancelled');
     this.stopRequested = true;
     this.remoteRunGeneration++;
     this.activeRunner?.requestStop();
@@ -2302,6 +2353,7 @@ struct Index {
     this.conversation.clear();
     clearStoredConversation(this.getAbilityContext());
     this.messages = [];
+    this.activeTaskProgressId = -1;
     this.liveReplyId = -1;
     this.liveReplyPending = false;
     this.processId = -1;
@@ -2420,6 +2472,7 @@ struct Index {
         kind: current.kind,
         imagePath: current.imagePath,
         collapsible: collapsible,
+        taskProgress: current.taskProgress,
         expanded: collapsible ? current.expanded : false,
         revision: current.revision + 1
       });
@@ -2442,6 +2495,7 @@ struct Index {
       kind: current.kind,
       imagePath: current.imagePath,
       collapsible: current.collapsible,
+      taskProgress: current.taskProgress,
       expanded: !current.expanded,
       revision: current.revision + 1
     };
