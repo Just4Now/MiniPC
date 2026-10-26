@@ -32,7 +32,7 @@ const POLL_INTERVAL_MS: number = 80;
 
 /** 推理更新回调 */
 export interface QwenVlUpdate {
-  /** 流式增量文本（可能切分 UTF-8 多字节字符，直接拼接即可） */
+  /** 流式增量文本（Native 已拼齐 UTF-8 字符） */
   delta?: string;
   /** 完整回复文本（生成结束时一次性给出） */
   done?: string;
@@ -64,6 +64,8 @@ export class QwenVlManager {
   private closed: boolean = false;
   private cancelled: boolean = false;
   private answer: string = '';
+  private rawAnswer: string = '';
+  private emittedLength: number = 0;
   private failure: string = '';
   private finishReason: string = '';
   private callback: ((update: QwenVlUpdate) => void) | null = null;
@@ -196,6 +198,8 @@ export class QwenVlManager {
     this.weightsMayBeLoaded = true;
     this.cancelled = false;
     this.answer = '';
+    this.rawAnswer = '';
+    this.emittedLength = 0;
     this.failure = '';
     this.finishReason = '';
     this.callback = callback;
@@ -276,6 +280,7 @@ export class QwenVlManager {
   }
 
   private handleEvent(raw: string): void {
+    if (!this.busy) return;
     let ev: NativeEvent;
     try {
       ev = JSON.parse(raw) as NativeEvent;
@@ -288,7 +293,6 @@ export class QwenVlManager {
         break;
       case 'response':
         this.appendAnswer(ev.payload);
-        break;
         break;
       case 'error':
         this.failNow(ev.payload);
@@ -332,65 +336,68 @@ export class QwenVlManager {
     return text;
   }
 
-  /**
-   * 累积模型输出：先剥掉特殊 token 残片，再计入回答（见 stripSpecialTokens）。
-   */
+  /** Hold a suspect prefix until it can no longer enter the short-output retry.
+   * Recompute from raw text so special tokens split across callbacks stay hidden. */
   private appendAnswer(payload: string): void {
-    const clean = QwenVlManager.stripSpecialTokens(payload);
-    if (clean.length !== payload.length) {
-      // 保留"模型确实响应了"的可观测性：只是不再让它污染回答文本。
-      hilog.info(DOMAIN, TAG, 'special token stripped from output (model did respond)');
-    }
-    this.answer += clean;
-    this.emit({ delta: clean });
+    this.rawAnswer += payload;
+    this.answer = QwenVlManager.stripSpecialTokens(this.rawAnswer);
+    this.publishAnswer(false);
   }
 
-  /**
-   * 剥离模型输出里的特殊 token 残片（如 `<|im_end|>`）。
-   *
-   * 结束符本不该进入回答，但引擎会原样透传。除了显示难看，它**会把回答长度顶过重试守卫
-   * 的阈值** —— 守卫是 `answer.trim().length < 2`：退化输出 `2` 本应触发重试，拼成
-   * `2<|im_end|>` 后是 12 个字符 → 不重试 → 垃圾直接交给用户（真机实测 `2<|im_end|>`）。
-   * 剥掉残片即可让守卫重新生效。
-   *
-   * 只剥**完整**的 `<|...|>`：遇到半个标记（分片边界切开）原样保留，避免丢字。
-   */
-  private static stripSpecialTokens(text: string): string {
+  private publishAnswer(final: boolean): void {
+    if (this.answer.indexOf('\uFFFD') >= 0 || (!final && this.answer.trim().length < 2)) return;
+    const delta = this.answer.substring(this.emittedLength);
+    if (delta.length === 0) return;
+    this.emittedLength = this.answer.length;
+    this.emit({ delta: delta });
+  }
+
+  /** Incomplete special-token suffixes must wait for the next callback. */
+  private static stripSpecialTokens(text: string, final: boolean = false): string {
     let out = text;
     for (;;) {
       const start = out.indexOf('<|');
       if (start < 0) {
-        return out;
+        return !final && out.endsWith('<') ? out.substring(0, out.length - 1) : out;
       }
       const end = out.indexOf('|>', start);
-      if (end < 0) {
-        return out;
-      }
+      if (end < 0) return out.substring(0, start);
       out = out.substring(0, start) + out.substring(end + 2);
     }
   }
 
   private finish(): void {
-    if (!this.failure && !this.cancelled && (!this.answer || !this.finishReason)) {
-      this.failure = this.answer ? '模型回复意外中断，请重试' : '模型没有返回内容，请重试';
-    }
-    // 空输出/过短输出自动重试（最多 1 次）：Qwen2.5-VL-3B 偶发直接输出
-    // 结束符/空白/单字（如 "a"），尤其连续图文会话时。重试保留本次
-    // imagePath/prompt（引擎会话不销毁）。
-    if (!this.failure && !this.cancelled && this.answer.trim().length < 2 &&
+    this.answer = QwenVlManager.stripSpecialTokens(this.rawAnswer, true);
+    const empty = this.answer.trim().length === 0;
+    const invalidEncoding = this.answer.indexOf('\uFFFD') >= 0;
+    // Retry only a normally ended attempt with no published text. A consumer
+    // cannot retract deltas already sent over the inference protocol.
+    if (!this.failure && !this.cancelled && this.finishReason === 'stop' &&
+      (empty || invalidEncoding || this.answer.trim().length < 2) && this.emittedLength === 0 &&
       this.retryCount < 1 && this.lastImagePath !== '' && this.lastPrompt !== '') {
       this.retryCount++;
-      hilog.warn(DOMAIN, TAG, 'empty output, auto-retry #%{public}d (img=%{public}s prompt=%{public}s)',
-        this.retryCount, this.lastImagePath, this.lastPrompt);
+      hilog.warn(DOMAIN, TAG, 'invalid or short output, auto-retry #%{public}d', this.retryCount);
       this.answer = '';
+      this.rawAnswer = '';
       this.finishReason = '';
-      const ok2: boolean = engine.start(this.modelPath(), this.lastImagePath, this.lastPrompt) === true;
-      if (ok2) {
-        this.busySince = Date.now();
-        return; // 继续轮询；不触发 done
+      try {
+        if (engine.start(this.modelPath(), this.lastImagePath, this.lastPrompt) === true) {
+          this.busySince = Date.now();
+          this.lastSilentLog = 0;
+          return;
+        }
+      } catch (_) {
+        // Settle the request below even when the native restart throws.
       }
-      this.failure = '模型没有返回内容，请重试';
+      this.failure = '模型重新推理失败，请重试';
     }
+    if (!this.failure && !this.cancelled) {
+      if (!this.finishReason) this.failure = '模型会话已结束，但没有收到结束标记';
+      else if (this.finishReason === 'error') this.failure = '模型推理失败，请重试';
+      else if (invalidEncoding) this.failure = '模型返回了无效编码，请重试';
+      else if (empty) this.failure = '模型没有返回内容，请重试';
+    }
+    if (!this.failure) this.publishAnswer(true);
     const doneRaw = this.failure || (this.cancelled ?
       (this.answer ? this.answer + '\n\n已停止生成' : '已停止生成') : this.answer);
     const done = this.failure !== '' && this.failure === doneRaw ? doneRaw : this.collapseTailRepeat(doneRaw);

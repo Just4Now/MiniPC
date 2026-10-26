@@ -281,6 +281,115 @@ function scan(t) {
 }
 
 (async () => {
+  // Field topology: two computes (hub/worker) plus two independent chat phones.
+  // Run both shipped channels and the real protocol across all three links.
+  {
+    const chatDir = require('node:path').resolve(__dirname, '../../../../../../../apps/agent-client/entry/src/main/ets/nearby');
+    const hub = build(true, 'four-hub'), worker = build(true, 'four-worker');
+    const chats = [build(false, 'four-chat-a', chatDir), build(false, 'four-chat-b', chatDir)];
+    await hub.channel.prepare(); await worker.channel.prepare();
+    for (const chat of chats) await chat.channel.prepare();
+    const received = [];
+    hub.channel.subscribe((m, epoch) => received.push({ m, epoch }), () => {});
+    worker.channel.subscribe((m, epoch) => {
+      if (m.type === 'deviceInfoSync') worker.channel.applyRemoteRoster(epoch, m.devices);
+    }, () => {});
+    for (const chat of chats) chat.channel.subscribe(() => {}, () => {});
+    hub.channel.frozenComputeKeys = [hub.channel.computeKey(hub.channel.localUid(), hub.channel.localName())];
+    hub.channel.applyComputeSlots();
+    hub.behavior.devices = [
+      { deviceId: 'worker', deviceName: 'Worker', networkId: 'net-w' },
+      { deviceId: 'chat-a', deviceName: 'Chat A', networkId: 'net-a' },
+      { deviceId: 'chat-b', deviceName: 'Chat B', networkId: 'net-b' }
+    ];
+    const pairs = [];
+    for (const [remote, id, name] of [[worker, 'worker', 'Worker'], [chats[0], 'chat-a', 'Chat A'], [chats[1], 'chat-b', 'Chat B']]) {
+      remote.behavior.localName = name;
+      const incoming = hub.accept(id), listeners = new Map();
+      const outgoing = { closed: false, on(event, fn) { listeners.set(event, fn); },
+        sendData(data) { incoming.listeners.get('dataReceived')?.(data); },
+        disconnect() { this.closed = true; }, close() { this.closed = true; } };
+      const serverSend = incoming.sendData.bind(incoming);
+      incoming.sendData = data => { serverSend(data); listeners.get('dataReceived')?.(data); };
+      const remotePeer = remote.channel.attach(outgoing, 'hub', false, 1);
+      await flush();
+      assert(remote.channel.isConnected());
+      pairs.push({ incoming, outgoing, remote, remotePeer, hubPeer: hub.channel.peers.find(p => p.peerId === id) });
+    }
+    const [compute, chatA, chatB] = pairs;
+    assert.equal(hub.channel.connectedCount(), 3);
+    assert.equal(hub.channel.peerInfos().filter(p => p.role === 'compute').length, 1);
+    assert.equal(hub.channel.peerInfos().filter(p => p.role === 'chat').length, 2);
+    assert.notEqual(chatA.remote.channel.selfSlot, chatB.remote.channel.selfSlot);
+    await hub.channel.send({ type: 'deviceInfoSync', requestId: 'four-roster', devices: [
+      { id: hub.channel.localUid(), role: 'self', slot: 1 },
+      { id: worker.channel.localUid(), role: 'compute', slot: 2 }
+    ] }, compute.hubPeer.epoch);
+    await flush(); assert.equal(worker.channel.selfComputeNumber(), 2);
+
+    const originalSend = chatB.incoming.sendData;
+    let attempts = 0, until = clock + 500;
+    chatB.incoming.sendData = data => {
+      attempts++;
+      if (clock < until) throw Object.assign(new Error('brief contention'), { code: 32390205 });
+      originalSend(data);
+    };
+    const recovering = hub.channel.send({ type: 'delta', requestId: 'recover', text: '恢复' }, chatB.hubPeer.epoch);
+    const other = hub.channel.send({ type: 'delta', requestId: 'unaffected', text: '正常' }, chatA.hubPeer.epoch);
+    await advance(1000);
+    assert(await recovering); assert(await other); assert(attempts >= 4, 'retry continues beyond the previous 360ms cutoff');
+    assert.equal(hub.channel.connectedCount(), 3); assert.equal(chatB.incoming.closed, false);
+    assert.equal(chatB.hubPeer.sendFailureSince, -1, 'success resets the failure window');
+
+    // Preserve a partly sent multi-frame result through a longer burst, too.
+    let frames = 0;
+    const chatMessages = [];
+    chatB.remote.channel.subscribe(m => chatMessages.push(m), () => {});
+    until = clock + 2500;
+    chatB.incoming.sendData = data => {
+      if (++frames > 1 && clock < until) throw Object.assign(new Error('mid-transfer contention'), { code: 32390205 });
+      originalSend(data);
+    };
+    const bigText = '完整回复'.repeat(300);
+    const partial = hub.channel.send({ type: 'delta', requestId: 'partial-burst', text: bigText }, chatB.hubPeer.epoch);
+    await advance(3000); assert(await partial);
+    assert.equal(chatMessages.find(m => m.requestId === 'partial-burst').text, bigText);
+    assert.equal(hub.channel.connectedCount(), 3); assert.equal(chatB.remote.channel.isConnected(), true);
+    assert.equal(chatB.hubPeer.sendFailureSince, -1);
+
+    // The same protection runs on the real chat-client sender.
+    const clientSend = chatB.outgoing.sendData;
+    until = clock + 500;
+    chatB.outgoing.sendData = data => {
+      if (clock < until) throw Object.assign(new Error('client contention'), { code: 32390300 });
+      clientSend(data);
+    };
+    const upload = chatB.remote.channel.send({ type: 'deviceInfo', requestId: 'client-recovered', capabilities: [] });
+    await advance(1000); assert(await upload);
+    assert(received.some(x => x.m.requestId === 'client-recovered'));
+    assert.equal(hub.channel.connectedCount(), 3);
+
+    for (const [channel, peer] of [[hub.channel, chatA.hubPeer], [chatB.remote.channel, chatB.remotePeer]]) {
+      peer.pending = 64;
+      assert.equal(await channel.send({ type: 'deviceInfo', requestId: 'backpressure', capabilities: [] }, peer.epoch), false);
+      assert(channel.peers.includes(peer), 'local queue pressure must not close a physical connection');
+      peer.pending = 0;
+    }
+    // Continued failure still triggers cleanup; the other phone and compute survive.
+    chatB.incoming.sendData = () => { throw Object.assign(new Error('persistent failure'), { code: 32390205 }); };
+    const persistent = hub.channel.send({ type: 'deviceInfo', requestId: 'persistent', capabilities: [] }, chatB.hubPeer.epoch);
+    await advance(16000); assert.equal(await persistent, false);
+    assert.equal(hub.channel.hasEpoch(chatB.hubPeer.epoch), false);
+    assert.equal(hub.channel.connectedCount(), 2);
+    assert.equal(chatA.incoming.closed, false); assert.equal(compute.incoming.closed, false);
+    compute.incoming.drop(-1);
+    assert.equal(hub.channel.hasEpoch(compute.hubPeer.epoch), false, 'platform disconnect still removes the dead peer');
+    assert.equal(hub.channel.connectedCount(), 1); assert.equal(chatA.incoming.closed, false);
+    hub.channel.disconnect(); worker.channel.disconnect();
+    for (const chat of chats) chat.channel.disconnect();
+    await flush();
+    console.log('PASS: two computes + two chats, bidirectional transient recovery, queue pressure and isolated sustained failure');
+  }
   // Run the real assembler AND the channel's 1s watchdog during a slow upload.
   for (const [name, dir] of [['compute', undefined], ['chat', require('node:path').resolve(__dirname, '../../../../../../../apps/agent-client/entry/src/main/ets/nearby')]]) {
     const t = build(name === 'compute', 'slow-upload-' + name, dir), listeners = new Map(), seen = [];

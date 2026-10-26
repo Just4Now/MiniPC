@@ -53,6 +53,8 @@ void Run(std::string modelDir, std::string imagePath, std::string prompt, uintpt
 
     std::lock_guard<std::mutex> lock(s.mutex);
     if (s.active && reinterpret_cast<uintptr_t>(&s) == generation) {
+        const std::string tail = s.utf8.Finish();
+        if (!tail.empty()) EventLocked(s, "response", tail);
         if (rc == QWEN2VL_ERR_CANCELLED) {
             // M25：重复循环被 OnToken 自动掐断视为正常结束（stop），
             // 上层不会显示"已停止生成"；用户主动取消仍是 cancelled。
@@ -109,6 +111,7 @@ napi_value Start(napi_env env, napi_callback_info info)
         s.cancelled = false;
         s.completed = false;
         s.events.clear();
+        s.utf8.Reset();
         s.recentPieces.clear();
         s.repetitionCut = false;
         s.generation = reinterpret_cast<uintptr_t>(&s);

@@ -11,6 +11,8 @@ import { COMPUTE_ADV_KEY_BYTES, COMPUTE_ADV_TYPE, COMPUTE_MANUFACTURE_ID, IS_SER
 const BUNDLE = 'com.jiuwen.registrychatui';
 const SERVICE = 'nearby-compute';
 const CONNECT_TRY_MS = 8000;
+const SEND_RETRY_DELAYS: number[] = [120, 240, 480, 960];
+const SEND_FAILURE_GRACE_MS = 15000;
 const COMPUTE_SCAN_MS = 4500;
 
 class BleHit {
@@ -163,6 +165,7 @@ class Peer {
   opened: boolean = false;
   hello: boolean = false;
   pending: number = 0;
+  sendFailureSince: number = -1;
   sequence: number = 0;
   timer: number = -1;
   fragmentTimer: number = -1;
@@ -940,7 +943,7 @@ export class LinkEnhanceChannel {
   private write(peer: Peer, message: WireMessage): Promise<boolean> {
     if (!this.holds(peer)) return Promise.resolve(false);
     if (peer.pending >= 64) {
-      this.drop(peer, '连接传输积压，请重新连接。');
+      hilog.warn(0, 'NearbyChat', 'le-send queue full epoch=%{public}d', peer.epoch);
       return Promise.resolve(false);
     }
     let frames: string[];
@@ -977,20 +980,31 @@ export class LinkEnhanceChannel {
     }
     try {
       peer.connection.sendData(data);
+      peer.sendFailureSince = -1;
       return Promise.resolve(true);
     } catch (error) {
       const code = (error as BusinessError).code;
-      if ((code === 32390205 || code === 32390206 || code === 32390300) && attempt < 2) {
+      const transient = code === 32390205 || code === 32390300;
+      if (transient && peer.sendFailureSince < 0) peer.sendFailureSince = Date.now();
+      const elapsed = transient ? Date.now() - peer.sendFailureSince : 0;
+      // Keep retrying this exact frame within the grace window: abandoning a
+      // partially sent image/message would make the receiver reap the link later.
+      if ((transient && elapsed < SEND_FAILURE_GRACE_MS) || (code === 32390206 && attempt < 2)) {
+        const delay = transient ? Math.min(SEND_RETRY_DELAYS[Math.min(attempt, SEND_RETRY_DELAYS.length - 1)],
+          SEND_FAILURE_GRACE_MS - elapsed) : SEND_RETRY_DELAYS[attempt];
         hilog.warn(0, 'NearbyChat', 'le-send retry code=%{public}s bytes=%{public}d attempt=%{public}d',
           String(code), data.byteLength, attempt + 1);
         return new Promise<boolean>(resolve => setTimeout(() => {
           this.sendFrame(peer, frame, attempt + 1).then(resolve);
-        }, 120 * (attempt + 1)));
+        }, delay));
       }
       hilog.error(0, 'NearbyChat', 'le-send failed code=%{public}s bytes=%{public}d', String(code), data.byteLength);
-      // 32390206 is a local parameter rejection. Dropping a healthy link turned one
-      // rejected telemetry frame into an endless disconnect/reconnect loop.
-      if (code !== 32390206) this.drop(peer, '消息发送失败，请重新连接。');
+      // A rejected frame or brief radio contention is not a disconnect. Keep
+      // the request failure visible, but only reap sustained transport failures.
+      if (code !== 32390206 && (!transient ||
+        Date.now() - peer.sendFailureSince >= SEND_FAILURE_GRACE_MS)) {
+        this.drop(peer, '消息发送失败，请重新连接。');
+      }
       return Promise.resolve(false);
     }
   }

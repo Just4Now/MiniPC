@@ -34,6 +34,7 @@
 #include <sys/stat.h>
 
 #include "qwen2vl_sdk.h"
+#include "vl_utf8_stream.h"
 
 /* ---- SDK 内部导出符号（libqwen2vl_sdk.so 静态链接的引擎日志系统）----
  * 引擎 log.cpp 的 init_logger() 依赖 dlopen("libhilog.so") + dlsym("HiLogPrint")：
@@ -62,6 +63,7 @@ struct State {
     bool cancelled = false;
     bool completed = false;
     std::vector<std::string> events;
+    qwenvl::Utf8Stream utf8;
 
     // cached engine (created+loaded on first request, kept until release)
     Qwen2vlEngine* engine = nullptr;
@@ -394,7 +396,8 @@ void OnToken(void* userdata, const char* text)
             return;
         }
     }
-    EventLocked(s, "response", text);
+    const std::string complete = s.utf8.Append(text);
+    if (!complete.empty()) EventLocked(s, "response", complete);
 }
 
 /* ---- IOManager 单例重建（B4 修复）----
