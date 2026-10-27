@@ -328,6 +328,7 @@ export class LinkEnhanceChannel {
   private onMessage: ((message: WireMessage, epoch: number) => void) | null = null;
   private onConnection: ((connected: boolean, epoch: number) => void) | null = null;
   private onActivity: ((connected: boolean) => void) | null = null;
+  private onSlotChange: ((slot: number) => void) | null = null;
   private status: string = IS_SERVER ? '可本机对话 · 请启用近场连接' : '请连接模型手机';
 
   initialize(context: common.UIAbilityContext): void { this.context = context; }
@@ -352,6 +353,11 @@ export class LinkEnhanceChannel {
   setActivityListener(listener: ((connected: boolean) => void) | null): void {
     this.onActivity = listener;
     listener?.(this.isConnected());
+  }
+  /** 自身算力槽位变化（选举/接替/ roster 同步/断开）回调；hub 角色跟随它切换。 */
+  setSlotListener(listener: ((slot: number) => void) | null): void {
+    this.onSlotChange = listener;
+    listener?.(this.selfComputeSlot);
   }
   private notifyConnection(connected: boolean, epoch: number): void {
     this.onActivity?.(connected);
@@ -1571,6 +1577,7 @@ export class LinkEnhanceChannel {
         this.selfComputeSlot, String(this.selfComputeSlot === 1));
       this.refreshAdvertisedSlot();
       this.dropNonHubChats();
+      this.onSlotChange?.(this.selfComputeSlot);
     }
   }
 
@@ -2186,6 +2193,7 @@ export class LinkEnhanceChannel {
       this.serverWanted = true;
       this.scheduleServerRestart();
     }
+    if (IS_SERVER) this.onSlotChange?.(this.selfComputeSlot);
   }
 
   destroy(): void {

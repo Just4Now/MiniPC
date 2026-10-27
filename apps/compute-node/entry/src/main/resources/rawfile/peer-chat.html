@@ -285,6 +285,10 @@
         <p class="model-hint">适用于本机执行的文字和图片推理。保存后对新请求生效，正在进行的任务保持原设置。</p>
         <p id="outputModeMessage" class="model-hint" role="status" aria-live="polite"></p>
       </section>
+      <h3 class="settings-label">外部代理接入 · OpenAI 兼容</h3>
+      <section class="model-settings">
+        <p id="apiEndpointText" class="model-hint">未开放。</p>
+      </section>
     </section>
     <div class="stats" id="stats"></div>
     <aside class="device-panel" id="devicePanel" aria-label="附近设备">
@@ -346,6 +350,7 @@
     const outputModeView=document.getElementById('outputMode');
     const applyOutputModeButton=document.getElementById('applyOutputMode');
     const outputModeMessage=document.getElementById('outputModeMessage');
+    const apiEndpointText=document.getElementById('apiEndpointText');
     let outputDraft=false;
     let modelState=null, modelStateSignature='', modelDraft=false, modelPollAt=0;
     function refreshModels(){
@@ -364,6 +369,11 @@
       if(outputModeView){
         if(!outputDraft)outputModeView.value=state.streaming===false?'complete':'stream';
         applyOutputModeButton.disabled=!outputDraft;
+      }
+      if(apiEndpointText){
+        apiEndpointText.textContent=state.apiEndpoint
+          ?'接入地址：'+state.apiEndpoint+'（需与本机同一局域网，无需 API Key）'
+          :'未开放：启用近场并成为算力设备1（hub）后自动开放，其他 agent 可用该地址的 /v1/chat/completions 与 /v1/models 接入。';
       }
       const signature=JSON.stringify([state.selected,state.options]);
       if(signature!==modelStateSignature){

@@ -32,6 +32,11 @@ import { TaskDisplayRelay } from '../ui/TaskDisplayRelay';
 import { inferenceSummary } from '../ui/InferencePresentation';
 import { InferenceTaskObserver } from '../ui/InferenceTaskObserver';
 import { collaborationScreen } from '../ui/CollaborationScreen';
+import { OpenAiServer, OPENAI_HTTP_PORT, HTTP_EPOCH_BASE } from '../server/OpenAiServer';
+import { OpenAiModelEntry } from '../server/OpenAiTranslator';
+import { TcpHttpServer } from '../server/TcpHttpServer';
+import { TrafficLog } from '../server/TrafficLog';
+import { localIpv4 } from '../server/LocalAddress';
 
 interface FlowNotice {
   key: string; kind: string; phase: string; origin: string; source: string;
@@ -104,6 +109,9 @@ struct Index {
   private model: LocalChat | null = null;
   private inference: InferenceHost | null = null;
   private relay: InferenceRelay | null = null;
+  /** hub 角色时对局域网提供 OpenAI 兼容端点（http://<本机IP>:8080/v1，无需 API Key）。 */
+  private openAiServer: OpenAiServer | null = null;
+  private trafficLog: TrafficLog | null = null;
   private transport: LocalLlmTransport | null = null;
   /** 本机多模态引擎通道（带图请求专用；VL 权重未部署时为空仍可创建，门控由内部就绪检查负责） */
   private vlTransport: VlLlmTransport | null = null;
@@ -166,7 +174,7 @@ struct Index {
         this.finishInferTask(requestId, epoch, answer, failed);
       };
       this.inference = new InferenceHost(this.model, (message: WireMessage, epoch: number): Promise<boolean> => {
-        return this.channel.send(message, epoch);
+        return this.sendWire(message, epoch);
       }, card);
       const host = this.inference;
       host.setDeviceProvider((): string => this.selfComputeLabel());
@@ -188,7 +196,7 @@ struct Index {
         this.forwardTaskDisplay(requestId, chatEpoch, workerEpoch, request);
       };
       this.relay = new InferenceRelay(this.router, (): PoolNode[] => this.poolNodes(), (): number[] => this.chatEpochs(),
-        host, (message: WireMessage, epoch: number): Promise<boolean> => this.channel.send(message, epoch), events);
+        host, (message: WireMessage, epoch: number): Promise<boolean> => this.sendWire(message, epoch), events);
       this.taskDisplay.log = (text: string): void => { hilog.warn(0, 'NearbyChat', '%{public}s', text); };
       this.relay.setSpeed((epoch: number): number => this.deviceSpeed.cost(epoch));
       this.relay.setAffinity((): boolean => {
@@ -211,6 +219,35 @@ struct Index {
         }
         // 聊天端（远端）的带图请求走同一条 VL 通道；未部署时传 null，InferenceHost 会 fail closed。
         host.setVisionTransport(this.vlTransport);
+        // 调试流量落盘：完整请求/回复 JSONL（8MB 轮转，保留 .old 一代）。
+        this.trafficLog = new TrafficLog(this.filesDir + '/openai-traffic.jsonl', 8 * 1024 * 1024);
+        // OpenAI 兼容网关：hub 角色时对外提供 http://<本机IP>:8080/v1，外部 agent 无需 API Key 即可接入。
+        this.openAiServer = new OpenAiServer({
+          port: OPENAI_HTTP_PORT,
+          transport: (): TcpHttpServer => new TcpHttpServer(),
+          models: (): OpenAiModelEntry[] => this.openAiModels(),
+          resolveAddress: (): Promise<string> => localIpv4(),
+          submit: (message: WireMessage, epoch: number): void => {
+            if (this.relay !== null && this.isComputeHub()) this.relay.handleFromChat(message, epoch);
+            else this.inference?.handle(message, epoch);
+          },
+          drop: (epoch: number): void => {
+            // 与 connectionChanged 相同的取消语义：先 host 后 relay。
+            this.inference?.peerDropped(epoch);
+            this.relay?.chatDropped(epoch);
+          },
+          // 在途 HTTP 推理数达到 ready 节点数即 429：单机 GEWU 并发会话会打挂服务。
+          capacity: (): number => this.poolNodes().filter((node: PoolNode): boolean => node.ready).length,
+          // 调试：完整请求/回复 JSONL 落盘 filesDir/openai-traffic.jsonl（8MB 轮转，保留 .old 一代）。
+          trafficSink: (line: string): void => {
+            if (this.trafficLog !== null) this.trafficLog.append(line);
+          },
+          onRequest: (epoch: number, requestId: string, prompt: string): void => {
+            if (this.taskLinks.size >= 128) this.taskLinks.delete(Array.from(this.taskLinks.keys())[0]);
+            this.taskLinks.set(Index.jobKey(epoch, requestId), { origin: '外部代理', input: prompt });
+          }
+        });
+        this.channel.setSlotListener((): void => this.syncOpenAiServer());
     }
   }
 
@@ -219,6 +256,8 @@ struct Index {
     collaborationScreen.setWanted(false);
     this.stopInfoPoll();
     this.stopMeshRetry();
+    this.channel.setSlotListener(null);
+    this.openAiServer?.stop();
     this.vlTransport?.cancel();
     this.model?.close();
     this.channel.disconnect();
@@ -254,6 +293,7 @@ struct Index {
     this.preparation = null;
     this.stopInfoPoll();
     this.stopMeshRetry();
+    this.syncOpenAiServer();
     this.channel.disconnect();
     this.showConnection();
   }
@@ -285,6 +325,7 @@ struct Index {
         if (operation !== this.channel.operation() || !this.pageReady) return;
         this.serviceReady = true;
         this.preparedOperation = operation;
+        this.syncOpenAiServer();
         this.channel.connectOtherComputes(operation).catch(() => {});
         this.startMeshRetry();
         this.startInfoPoll();
@@ -334,6 +375,7 @@ struct Index {
     } catch (error) {
       if (operation === this.channel.operation()) {
         this.serviceReady = false;
+        this.syncOpenAiServer();
         this.connectionError = error instanceof Error ? error.message : '协同未准备完成，请点击输入框重试。';
       }
     } finally {
@@ -445,7 +487,7 @@ struct Index {
       return { name: dir, vision: isVlLayout(this.filesDir + '/models/' + dir) };
     });
     return { selected: selection.model, options: options, streaming: outputSettings(this.filesDir).streaming,
-      locked: this.modelSettingsLocked() };
+      locked: this.modelSettingsLocked(), apiEndpoint: this.openAiServer?.endpoint() || '' };
   }
 
   private selectModel(model: string): string {
@@ -651,7 +693,9 @@ struct Index {
 
   private cancelDroppedPeers(): void {
     for (const job of this.jobs.slice()) {
-      if (job.peer && !this.channel.hasEpoch(job.epoch) && job.workerEpoch === 0) {
+      // 合成 epoch（OpenAI 网关）不在近场连接表里，hasEpoch 恒 false；
+      // 它们的取消由网关自身的 drop 路径负责，这里绝不能顺带杀掉 VL 会话。
+      if (job.peer && job.epoch < HTTP_EPOCH_BASE && !this.channel.hasEpoch(job.epoch) && job.workerEpoch === 0) {
         this.model?.cancel(job.key);
         this.vlTransport?.cancel();
       }
@@ -1029,6 +1073,48 @@ struct Index {
       if (peer.ready && peer.role === 'chat') epochs.push(peer.epoch);
     }
     return epochs;
+  }
+
+  /**
+   * relay/host 回包分流：合成 epoch（HTTP 网关请求）归 OpenAiServer，
+   * 其余走原近场聊天通道。包装这一个出口即同时覆盖自执行与 worker 转发两条路径。
+   */
+  private sendWire(message: WireMessage, epoch: number): Promise<boolean> {
+    if (this.openAiServer !== null && epoch >= HTTP_EPOCH_BASE) {
+      return this.openAiServer.deliver(message, epoch);
+    }
+    return this.channel.send(message, epoch);
+  }
+
+  /** 近场就绪且持有 hub 角色时对外提供 OpenAI 端点；失格立即收掉（挂起请求一并取消）。 */
+  private syncOpenAiServer(): void {
+    const server = this.openAiServer;
+    if (server === null) return;
+    server.sync(IS_SERVER && this.serviceReady && this.isComputeHub())
+      .then((): void => this.emitDashboard())
+      .catch((_error: Error): void => {});
+  }
+
+  /** /v1/models 元数据：本机已就绪模型 + 集群设备上报的模型，按名去重。 */
+  private openAiModels(): OpenAiModelEntry[] {
+    const entries: OpenAiModelEntry[] = [];
+    const seen: Set<string> = new Set<string>();
+    const add = (id: string, vision: boolean): void => {
+      const name = id.trim();
+      if (name.length === 0 || seen.has(name)) return;
+      seen.add(name);
+      entries.push({ id: name, vision: vision });
+    };
+    for (const dir of readyModelDirs(this.filesDir)) {
+      add(dir, isVlLayout(this.filesDir + '/models/' + dir));
+    }
+    const vlName = QwenVlManager.getInstance().getDeployedModelName() || '';
+    if (vlName.length > 0) add(vlName, true);
+    for (const stats of this.peerStats.values()) {
+      if (stats.model === undefined) continue;
+      add(stats.model, stats.capabilities !== undefined && stats.capabilities.includes('vision'));
+    }
+    return entries;
   }
 
   /** Load snapshot for routing: include hand-offs the devices have not reported yet. */

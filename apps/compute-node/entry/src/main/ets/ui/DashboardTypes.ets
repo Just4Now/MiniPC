@@ -6,6 +6,8 @@ export interface ModelSettingsView {
   selected: string;
   options: ModelChoiceView[];
   locked: boolean;
+  /** hub 角色时对局域网开放的 OpenAI 兼容端点；空串表示未开放。 */
+  apiEndpoint?: string;
 }
 
 export interface ModelChoiceView {

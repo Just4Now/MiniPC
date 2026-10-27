@@ -9,6 +9,12 @@ function loadEts(file, requires = {}) {
   vm.runInNewContext(transpile(file), box);
   return box.exports;
 }
+// OpenAI 网关链路共用：@kit.ArkTS util 的宿主侧实现（Index.ets 现在引用 server/* 模块）。
+const utilMock = {
+  generateRandomUUID: () => 'request-1',
+  TextEncoder: class { encodeInto(text) { return new Uint8Array(Buffer.from(text, 'utf8')); } },
+  TextDecoder: { create: () => ({ decodeToString: bytes => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('utf8') }) }
+};
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 function setup(isServer) {
   let connected = false, operation = 0, connections = 0, disconnects = 0, checks = 0;
@@ -127,6 +133,47 @@ function setup(isServer) {
       pickJpegDataUrl: async () => '',
       jpegBase64Payload: d => d.indexOf('data:image/jpeg;base64,') === 0 ? d.slice('data:image/jpeg;base64,'.length) : d
     };
+    if (name === '../server/HttpProtocol') {
+      return loadEts(__dirname + '/../server/HttpProtocol.ets', { '@kit.ArkTS': { util: utilMock } });
+    }
+    if (name === '../server/OpenAiTranslator') {
+      return loadEts(__dirname + '/../server/OpenAiTranslator.ets', {
+        '@kit.ArkTS': { util: utilMock },
+        '../protocol/ChatProtocol': loadEts(__dirname + '/../protocol/ChatProtocol.ets', { '@kit.ArkTS': { util: utilMock } }),
+        './HttpProtocol': loadEts(__dirname + '/../server/HttpProtocol.ets', { '@kit.ArkTS': { util: utilMock } })
+      });
+    }
+    if (name === '../server/OpenAiServer') {
+      return loadEts(__dirname + '/../server/OpenAiServer.ets', {
+        '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {}, error() {} } },
+        './OpenAiTranslator': loadEts(__dirname + '/../server/OpenAiTranslator.ets', {
+          '@kit.ArkTS': { util: utilMock },
+          '../protocol/ChatProtocol': loadEts(__dirname + '/../protocol/ChatProtocol.ets', { '@kit.ArkTS': { util: utilMock } }),
+          './HttpProtocol': loadEts(__dirname + '/../server/HttpProtocol.ets', { '@kit.ArkTS': { util: utilMock } })
+        })
+      });
+    }
+    if (name === '../server/TcpHttpServer') {
+      return loadEts(__dirname + '/../server/TcpHttpServer.ets', {
+        '@ohos.net.socket': { constructTCPSocketServerInstance: () => ({ on() {}, off() {}, listen: async () => {}, close: async () => {} }) },
+        '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {}, error() {} } },
+        './HttpProtocol': loadEts(__dirname + '/../server/HttpProtocol.ets', { '@kit.ArkTS': { util: utilMock } }),
+        './OpenAiTranslator': loadEts(__dirname + '/../server/OpenAiTranslator.ets', {
+          '@kit.ArkTS': { util: utilMock },
+          '../protocol/ChatProtocol': loadEts(__dirname + '/../protocol/ChatProtocol.ets', { '@kit.ArkTS': { util: utilMock } }),
+          './HttpProtocol': loadEts(__dirname + '/../server/HttpProtocol.ets', { '@kit.ArkTS': { util: utilMock } })
+        })
+      });
+    }
+    if (name === '../server/LocalAddress') {
+      return loadEts(__dirname + '/../server/LocalAddress.ets', {
+        '@kit.NetworkKit': { connection: { getDefaultNet: async () => ({}), getConnectionProperties: async () => ({ linkAddresses: [] }) } }
+      });
+    }
+    if (name === '../server/TrafficLog') {
+      // Index 逻辑测试不触盘：桩掉 TrafficLog，流量落盘由 TrafficLog.test.cjs 单测。
+      return { TrafficLog: class { constructor() {} append() {} } };
+    }
     return {};
   } };
   let source = fs.readFileSync(__dirname + '/Index.ets', 'utf8');
