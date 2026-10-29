@@ -73,3 +73,7 @@ plan/
 # DevEco 生成的本地 C++ 语言服务配置
 **/.clangd
 **/.clang-tidy
+
+# Generated portable permission tool, including local SDK binaries
+/MiniPC-Model-Access/
+/MiniPC-Model-Access.zip

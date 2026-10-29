@@ -21,8 +21,10 @@ export class RelayEvents {
     (_requestId: string, _chatEpoch: number, _phase: string): void => {};
   metrics: (requestId: string, chatEpoch: number, metrics: InferenceMetrics) => void =
     (_requestId: string, _chatEpoch: number, _metrics: InferenceMetrics): void => {};
-  begin: (requestId: string, chatEpoch: number, workerEpoch: number, messages: ChatMessage[], label: string) => void =
-    (_requestId: string, _chatEpoch: number, _workerEpoch: number, _messages: ChatMessage[], _label: string): void => {};
+  begin: (requestId: string, chatEpoch: number, workerEpoch: number, messages: ChatMessage[], label: string,
+    image: string) => void =
+    (_requestId: string, _chatEpoch: number, _workerEpoch: number, _messages: ChatMessage[], _label: string,
+      _image: string): void => {};
   delta: (requestId: string, chatEpoch: number, answer: string) => void =
     (_requestId: string, _chatEpoch: number, _answer: string): void => {};
   end: (requestId: string, chatEpoch: number, answer: string, failed: boolean) => void =
@@ -271,7 +273,8 @@ export class InferenceRelay {
     // Count before sending so the next request sees the updated load.
     const dispatch = this.router.beginDispatch(id, entry);
     const forwarded = this.forwardCopy(message, dispatch.forwardId);
-    this.events.begin(id, chatEpoch, target.epoch, messages, message.label !== undefined ? message.label : '');
+    this.events.begin(id, chatEpoch, target.epoch, messages, message.label !== undefined ? message.label : '',
+      message.image !== undefined ? message.image : '');
     this.events.forward(id, chatEpoch, target.epoch, forwarded);
     hilog.info(0, 'NearbyChat', 'infer relay request=%{public}s forward=%{public}s worker=%{public}d',
       id, dispatch.forwardId, target.epoch);

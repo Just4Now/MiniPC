@@ -8,23 +8,27 @@ param(
   [Parameter(Mandatory = $true)][ValidatePattern('^[A-Za-z0-9._:-]+$')][string]$Device,
   [ValidateSet('Start', 'Status', 'Stop')][string]$Action = 'Status',
   [string]$SdkRoot = 'D:\command-line-tools\sdk\default\openharmony',
-  [switch]$RestartApp
+  [switch]$RestartApp,
+  [string]$HdcPath = ''
 )
 $ErrorActionPreference = 'Stop'
-$hdcPath = Join-Path $SdkRoot 'toolchains\hdc.exe'
+$resolvedHdc = if ($HdcPath.Length -gt 0) { $HdcPath } else { Join-Path $SdkRoot 'toolchains\hdc.exe' }
 $scriptPath = Join-Path $PSScriptRoot 'vl-app-access.sh'
 $remote = '/data/local/tmp/minipc-vl-app-access'
 $remoteScript = "$remote/access-$([Guid]::NewGuid().ToString('N')).sh"
 function Invoke-Device([string]$Command) {
-  $lines = @(& $hdcPath -t $Device shell "$Command`necho VL_ACCESS_EXIT:`$?" 2>&1)
+  $lines = @(& $resolvedHdc -t $Device shell "$Command`necho VL_ACCESS_EXIT:`$?" 2>&1)
   $output = $lines -join "`n"
   if ($LASTEXITCODE -ne 0 -or $output -notmatch 'VL_ACCESS_EXIT:0\s*$') { throw "Device command failed: $output" }
   return ($output -replace '\s*VL_ACCESS_EXIT:0\s*$', '').Trim()
 }
-if (-not (Test-Path -LiteralPath $hdcPath -PathType Leaf)) { throw "Missing HDC: $hdcPath" }
+if (-not (Test-Path -LiteralPath $resolvedHdc -PathType Leaf)) { throw "Missing HDC: $resolvedHdc" }
 if ((Invoke-Device 'id -u') -ne '0') { throw 'An existing root HDC session is required.' }
-Invoke-Device "test ! -L $remote && if test -e $remote; then test -d $remote && test `"`$(stat -c %u $remote)`" = 0; else mkdir -m 700 $remote; fi" | Out-Null
-& $hdcPath -t $Device file send $scriptPath $remoteScript
+# Windows PowerShell 5.1 changes embedded quotes when invoking native HDC.
+# Keep shell substitution out of the command line and check ownership locally.
+Invoke-Device "test ! -L $remote && if test -e $remote; then test -d $remote; else mkdir -m 700 $remote; fi" | Out-Null
+if ((Invoke-Device "stat -c %u $remote") -ne '0') { throw 'Setup directory must be root-owned.' }
+& $resolvedHdc -t $Device file send $scriptPath $remoteScript
 if ($LASTEXITCODE -ne 0) { throw 'Access script upload failed.' }
 Invoke-Device "chmod 700 $remoteScript && sh -n $remoteScript" | Out-Null
 if ($RestartApp) {

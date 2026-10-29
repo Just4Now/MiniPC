@@ -123,6 +123,13 @@ function setup(isServer) {
         cpuUsage: entry.cpuUsage, modelRequests: entry.modelRequests, peerRole: 'compute'
       })
     };
+    if (name === '../llm/UsageLedger') return loadEts(__dirname + '/../llm/UsageLedger.ets', {
+      '@kit.CoreFileKit': { fileIo: {
+        OpenMode: { CREATE: 1, READ_WRITE: 2, TRUNC: 4 },
+        readTextSync() { throw new Error('missing'); },
+        openSync() { return { fd: 1 }; }, writeSync() {}, closeSync() {}, renameSync() {}
+      } }
+    });
     if (name === '../media/ImageAttach') return {
       pickJpegDataUrl: async () => '',
       jpegBase64Payload: d => d.indexOf('data:image/jpeg;base64,') === 0 ? d.slice('data:image/jpeg;base64,'.length) : d
@@ -660,6 +667,15 @@ function setup(isServer) {
   assert.equal(s.page.modelSettings().streaming,false);
   s.behavior.outputSaveError='';assert.equal(s.page.setOutputMode('stream'),'');
   assert.equal(s.page.modelSettings().streaming,true);
+  assert.equal(s.page.saveUsageSettings('{"tasks":"4","tokens":"10","yuan":"1.5","priceMode":"custom","inputYuan":"2","outputYuan":"8"}'),'');
+  let usageBoard=s.events.filter(e=>e.kind==='dashboard').at(-1);
+  assert.equal(usageBoard.usage.tasks,4);
+  assert.equal(usageBoard.usage.tokens,10);
+  assert.equal(usageBoard.usage.microYuan,1500000);
+  assert.equal(s.page.saveUsageSettings('{"reset":true}'),'');
+  assert.equal(s.page.usage.completedTasks,0);
+  assert.equal(s.page.usage.priceMode,'custom');
+  assert.ok(s.page.saveUsageSettings('nope'));
   console.log('PASS: output setting validates, persists and changes independently of active inference');
 }
 
@@ -953,6 +969,9 @@ function setup(isServer) {
   h.page.localUpdate(job.key,{kind:'done',text:'answer',finishReason:'stop',metrics:{streaming:true,prefillMs:25,completionTokens:1}});
   const view=h.page.toJobView(h.page.finishedJobs[0],Date.now());
   assert.equal(view.firstAt,first);assert.equal(view.metrics.prefillMs,25);assert.equal(view.running,false);
+  assert.equal(h.page.usage.completedTasks,1);
+  assert.equal(h.page.usage.completionTokens,1);
+  assert.ok(h.page.usage.savedMicroYuan===4||h.page.usage.savedMicroYuan===8);
   console.log('PASS: observed first output skips empty chunks and final engine metrics survive the dashboard');
 }
 
@@ -1010,4 +1029,15 @@ function setup(isServer) {
   worker.page.receiveFlow(first,1);assert.equal(worker.page.flowMirrors.size,0,'late start snapshots cannot revive a cleared request');
   worker.page.receiveFlow({...first,text:'{bad json'},1);worker.page.receiveFlow(first,99);assert.equal(worker.page.flowMirrors.size,0);
   console.log('PASS: worker flow mirrors, payload privacy, phase-only publication, terminal revisions and sender/schema checks');
+
+  const local=setup(true);
+  const pictured=local.page.createJob('img',[{role:'user',content:'这是什么'}],true,7,0,'/9j/4AAQ');
+  assert.equal(pictured.question,'这是什么');
+  assert.equal(pictured.image,'data:image/jpeg;base64,/9j/4AAQ');
+  assert.equal(pictured.kind,'image');
+  local.page.showInferTask('vis',7,'介绍一下深圳','普通聊天','/9j/4AAQ');
+  const infer=local.page.jobs.find(job=>job.id==='vis');
+  assert.equal(infer.question,'介绍一下深圳');
+  assert.equal(infer.image,'data:image/jpeg;base64,/9j/4AAQ');
+  console.log('PASS: collaboration cards keep the current question and request image');
 })().catch(error=>{console.error(error);process.exitCode=1;});

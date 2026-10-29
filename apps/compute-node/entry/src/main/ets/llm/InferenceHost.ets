@@ -22,8 +22,8 @@ export class InferCardHooks {
     (_requestId: string, _epoch: number, _phase: string): void => {};
   metrics: (requestId: string, epoch: number, metrics: InferenceMetrics) => void =
     (_requestId: string, _epoch: number, _metrics: InferenceMetrics): void => {};
-  begin: (requestId: string, epoch: number, prompt: string, label: string) => void =
-    (_requestId: string, _epoch: number, _prompt: string, _label: string): void => {};
+  begin: (requestId: string, epoch: number, prompt: string, label: string, image: string) => void =
+    (_requestId: string, _epoch: number, _prompt: string, _label: string, _image: string): void => {};
   delta: (requestId: string, epoch: number, answer: string, outputAt?: number) => void =
     (_requestId: string, _epoch: number, _answer: string, _outputAt?: number): void => {};
   end: (requestId: string, epoch: number, answer: string, failed: boolean) => void =
@@ -245,7 +245,7 @@ export class InferenceHost implements RelayLocal {
     hilog.info(0, 'NearbyChat', 'infer begin request=%{public}s epoch=%{public}d native=%{public}s active=%{public}d',
       requestId, epoch, request.modelRequestId, this.requests.size);
     try {
-      this.card.begin(requestId, epoch, prompt, message.label !== undefined ? message.label : '');
+      this.card.begin(requestId, epoch, prompt, message.label !== undefined ? message.label : '', image);
     } catch (_error) {
       hilog.warn(0, 'NearbyChat', 'infer card begin failed request=%{public}s', requestId);
     }

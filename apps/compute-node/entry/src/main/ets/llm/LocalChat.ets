@@ -45,6 +45,32 @@ function reportedNumber(value: number | undefined, integer: boolean = false): nu
     (!integer || Number.isSafeInteger(value)) ? value : undefined;
 }
 
+function stallSeconds(payload: string, prefix: string): string {
+  if (payload.length <= prefix.length || payload.charAt(prefix.length) !== ':') return '';
+  const raw = payload.substring(prefix.length + 1);
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? String(value) : '';
+}
+
+/** Map native end payloads to the failure the user should see. Empty means success path. */
+function endFailure(payload: string, hasAnswer: boolean, hasFinish: boolean): string {
+  if (payload.indexOf('stalled_idle') === 0) {
+    const seconds = stallSeconds(payload, 'stalled_idle');
+    return hasAnswer ?
+      (seconds ? '模型已超过' + seconds + '秒没有继续输出，已停止。' : '模型已较长时间没有继续输出，已停止。') :
+      (seconds ? '超过' + seconds + '秒没有输出，已停止。' : '超过时限没有输出，已停止。');
+  }
+  if (payload.indexOf('stalled_limit') === 0 || payload === 'stalled') {
+    const seconds = stallSeconds(payload, 'stalled_limit');
+    return hasAnswer ?
+      (seconds ? '生成已达' + seconds + '秒上限仍未结束，已停止。' : '生成已达时限仍未结束，已停止。') :
+      (seconds ? '超过' + seconds + '秒仍未开始输出，已停止。' : '超过时限仍未开始输出，已停止。');
+  }
+  if (!hasAnswer) return '模型没有返回内容，请重试。';
+  if (!hasFinish) return '模型会话已结束，但没有收到结束标记。';
+  return '';
+}
+
 interface Job {
   requestId: string;
   nativeId: number;
@@ -260,8 +286,9 @@ export class LocalChat {
         if (job.finishReason.length > 0) { this.deliver(job); }
       }
       if (event.event === 'end') {
-        if (event.payload === 'stalled' && job.answer.length === 0 && job.failure.length === 0) {
-          job.failure = '算力端没有在时限内返回，请再试一次。';
+        if (!job.failure && !job.cancelled) {
+          const mapped = endFailure(event.payload, job.answer.length > 0, job.finishReason.length > 0);
+          if (mapped.length > 0) job.failure = mapped;
         }
         this.finish(job);
       }
@@ -289,7 +316,7 @@ export class LocalChat {
   private deliver(job: Job): void {
     if (job.delivered) return;
     if (!job.failure && !job.cancelled && (!job.answer || !job.finishReason)) {
-      job.failure = job.answer ? '模型回复意外中断，请重试。' : '模型没有返回内容，请重试。';
+      job.failure = job.answer ? '模型会话已结束，但没有收到结束标记。' : '模型没有返回内容，请重试。';
     }
     const update: ChatUpdate = {
       kind: 'done', text: job.failure || (job.cancelled ?

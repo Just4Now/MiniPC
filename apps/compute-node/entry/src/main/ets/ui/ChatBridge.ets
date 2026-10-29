@@ -9,17 +9,24 @@ export class ChatBridge {
   private onSelectModel: (model: string) => string;
   private onModels: () => string;
   private onSetOutputMode: (mode: string) => string;
+  private onUsageSettings: () => string;
+  private onSaveUsageSettings: (payload: string) => string;
   constructor(send: (text: string) => string, stop: () => void, connect: () => void, prepare: () => void,
     pick: () => void, clear: () => void = (): void => {}, clearImage: () => void = (): void => {},
     selectModel: (model: string) => string = (): string => '当前设备不支持切换模型。',
     models: () => string = (): string => 'null',
-    setOutputMode: (mode: string) => string = (): string => '当前设备不支持切换输出方式。') {
+    setOutputMode: (mode: string) => string = (): string => '当前设备不支持切换输出方式。',
+    usageSettings: () => string = (): string => 'null',
+    saveUsageSettings: (payload: string) => string = (payload: string): string =>
+      payload.length >= 0 ? '当前设备不支持修改累计统计。' : '') {
     this.onSend = send; this.onStop = stop; this.onConnect = connect; this.onPrepare = prepare; this.onPick = pick;
     this.onClear = clear;
     this.onClearImage = clearImage;
     this.onSelectModel = selectModel;
     this.onModels = models;
     this.onSetOutputMode = setOutputMode;
+    this.onUsageSettings = usageSettings;
+    this.onSaveUsageSettings = saveUsageSettings;
   }
   send(text: string): string { return this.onSend(text); }
   stop(): void { this.onStop(); }
@@ -31,4 +38,6 @@ export class ChatBridge {
   selectModel(model: string): string { return this.onSelectModel(model); }
   models(): string { return this.onModels(); }
   setOutputMode(mode: string): string { return this.onSetOutputMode(mode); }
+  usageSettings(): string { return this.onUsageSettings(); }
+  saveUsageSettings(payload: string): string { return this.onSaveUsageSettings(payload); }
 }

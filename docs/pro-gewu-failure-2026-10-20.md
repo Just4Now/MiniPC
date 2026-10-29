@@ -42,3 +42,15 @@
 原始 GEWU 进程日志、应用回调、崩溃转储和内核日志位于 `.hvigor/pro-gewu-2026-10-20/pros-kernel-test-*`。后续需要 Pro 平台适配的 kernel（日志平台 `changsha`），以及提供方确认与当前 GEWU、NPU 驱动运行时的配套关系。
 
 原始日志、崩溃转储和两个 kernel 的只读副本保存在 `.hvigor/pro-gewu-2026-10-20/`。
+
+## 2026-10-21：按用户要求回滚 Harden / Pro
+
+设备仍为 `3QC0124C20000251`。用户确认该机称为 Harden，选择 Qwen2.5-7B 后也在模型加载阶段失败：文件可读，create/submit 成功，但约 0.6 秒返回空内容及 `finish_reason=abort`。当时仍是新增 GEWU 核心库和旧 kernel 混用。
+
+用户要求停止新库测试并还原。以该设备自身只读分区 `/mnt/lower/usr/system`、`/mnt/lower/vendor` 为来源，恢复 15 项原版库和 GEWU 服务配置；5 项新增模块移出加载目录。未使用另一台 Pro 的原库，也未修改权重或模型选择。
+
+文件级回滚已完成，15 项 SHA-256 校验全部通过，但应用推理尚未恢复可用。全原版组合的公开 QoS 路径返回 create=801，日志表明当前系统调用入口加载客户端时要求 `GewuEnableCollaboration`，原版客户端仅导出四个基础接口，没有这个符号。短暂保留更新版客户端验证时，create=0 而 submit/destroy=201，服务端出现调用不对应的记录，不能作为兼容组合。该尝试已经撤回，最终客户端也恢复为原版 158688 bytes。不能把文件恢复等同于 7B 已经运行成功。
+
+最终设备保持全部原版 GEWU 文件、Qwen2.5-7B 选择，应用已经重开。后续需要找到此前可用的配套 QoS/GEWU 接口版本，或单独处理现有系统入口与原服务的兼容性；本次未为此修改或编译 HAP。
+
+回滚前文件、原版快照、移出的新增模块和校验清单保存在设备 `/data/local/tmp/minipc-gewu-restore-20261021-1208/`，本机另存完整备份 `.hvigor/harden-qwen2-2026-10-21/gewu-rollback-backup.tgz`。诊断记录及恢复脚本位于同一本机目录。

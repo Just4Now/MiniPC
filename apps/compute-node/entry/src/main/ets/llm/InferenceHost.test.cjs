@@ -190,6 +190,7 @@ test('image inference uses the VL transport and its cancellation without startin
   h.host.setVisionTransport({readinessError:()=>'',start(messages,cb,id,image){visionStarts.push({messages,cb,id,image});return '';},cancel(id){visionCancels.push(id);}});
   h.host.handle({...request('image'),image:'/9j/4AAQSkZJRg=='},7);
   assert.equal(h.starts.length,0);assert.equal(visionStarts.length,1);assert.equal(visionStarts[0].image,'/9j/4AAQSkZJRg==');
+  assert.equal(h.cards.find(card=>card[0]==='begin')[5],'/9j/4AAQSkZJRg==');
   h.host.handle(request('text'),8);assert.equal(h.messages(8,'text','infer.error')[0].code,'BUSY');
   h.host.handle({type:'infer.cancel',requestId:'image'},7);assert.deepEqual(visionCancels,[visionStarts[0].id]);
   visionStarts[0].cb({kind:'done',text:'',finishReason:'cancelled'});assert.equal(h.host.activeCount(),0);

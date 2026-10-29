@@ -19,6 +19,10 @@ import { VlLlmTransport } from '../llm/VlLlmTransport';
 import { QwenVlManager } from '../llm/QwenVlManager';
 import { isVlLayout, modelSelection, readyModelDirs, saveModelSelection } from '../llm/ModelRegistry';
 import { outputSettings, saveOutputSettings } from '../llm/OutputSettings';
+import {
+  UsageLedger, applyUsageSettings, emptyUsage, loadUsage, recordFinishedTask, recordLocalCall,
+  savedTokens, saveUsage, usageSettingsJson
+} from '../llm/UsageLedger';
 import { pickJpegDataUrl, jpegBase64Payload } from '../media/ImageAttach';
 import {
   DEVICE_INFO_POLL_MS, applyDeviceInfo, buildSelfEntry, deployedModelName,
@@ -92,7 +96,9 @@ struct Index {
     }, () => { this.pickImage(); }, () => { this.clearFinishedJobs(); }, () => { this.pendingImage = ''; },
     (model: string): string => this.selectModel(model),
     (): string => IS_SERVER && this.filesDir.length > 0 ? JSON.stringify(this.modelSettings()) : 'null',
-    (mode: string): string => this.setOutputMode(mode));
+    (mode: string): string => this.setOutputMode(mode),
+    (): string => usageSettingsJson(this.usage),
+    (payload: string): string => this.saveUsageSettings(payload));
   private channel = nearbyChannel;
   private connecting: boolean = false;
   private preparation: Promise<void> | null = null;
@@ -132,6 +138,7 @@ struct Index {
   private pendingBId: string = '';
   private overlapArmed: boolean = false;
   private filesDir: string = '';
+  private usage: UsageLedger = emptyUsage();
   private router: ComputeRouter = new ComputeRouter();
   private deviceSpeed: DeviceSpeed = new DeviceSpeed();
   /** auto | split | pin1 | pin2. Only the hub's scheduleRequest consults this. */
@@ -150,14 +157,15 @@ struct Index {
     if (IS_SERVER) {
       const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
       this.filesDir = context.getApplicationContext().filesDir;
+      this.usage = loadUsage(this.filesDir);
       this.model = new LocalChat(this.filesDir);
       const card = new InferCardHooks();
       card.phase = (id: string, epoch: number, phase: string): void => this.updateJobPhase(id, epoch, phase);
       card.metrics = (requestId: string, epoch: number, metrics: InferenceMetrics): void => {
         this.updateJobMetrics(requestId, epoch, metrics);
       };
-      card.begin = (requestId: string, epoch: number, prompt: string, label: string): void => {
-        this.showInferTask(requestId, epoch, prompt, label);
+      card.begin = (requestId: string, epoch: number, prompt: string, label: string, image: string): void => {
+        this.showInferTask(requestId, epoch, prompt, label, image);
       };
       card.delta = (requestId: string, epoch: number, answer: string, outputAt?: number): void => {
         this.updateInferTask(requestId, epoch, answer, outputAt);
@@ -175,8 +183,9 @@ struct Index {
       events.metrics = (requestId: string, epoch: number, metrics: InferenceMetrics): void => {
         this.updateJobMetrics(requestId, epoch, metrics);
       };
-      events.begin = (requestId: string, chatEpoch: number, workerEpoch: number, messages: ChatMessage[], label: string): void => {
-        this.showRelayTask(requestId, chatEpoch, workerEpoch, messages, label);
+      events.begin = (requestId: string, chatEpoch: number, workerEpoch: number, messages: ChatMessage[], label: string,
+        image: string): void => {
+        this.showRelayTask(requestId, chatEpoch, workerEpoch, messages, label, image);
       };
       events.delta = (requestId: string, chatEpoch: number, answer: string): void => {
         this.updateRelayTask(requestId, chatEpoch, answer);
@@ -377,10 +386,7 @@ struct Index {
       source: computeLabel(workerEpoch, peers, this.selfComputeLabel()),
       origin: link !== undefined ? link.origin : (originLabel.length > 0 ? this.forwardedOrigin(originLabel) : (peer ? chatLabel(epoch, peers) : '本机')),
       workerEpoch: workerEpoch,
-      // 管线内图片一律裸 base64；仅本机与 Hub 自转发的任务转回 data URL 供聊天
-      // 轨道展示，聊天端来源的任务不回传（仪表盘流式刷新会反复序列化 20KB+ 数据）。
-      image: peer && epoch !== 0 ? '' :
-        (image.length > 0 ? 'data:image/jpeg;base64,' + image : ''),
+      image: this.jobImage(image),
       routeMode: routeMode,
       taskTier: taskTier
     };
@@ -476,10 +482,20 @@ struct Index {
     return error;
   }
 
+  private saveUsageSettings(payload: string): string {
+    if (!IS_SERVER || this.filesDir.length === 0) return '统计尚未初始化。';
+    const error = applyUsageSettings(this.usage, payload);
+    if (error.length > 0) return error;
+    saveUsage(this.filesDir, this.usage);
+    this.emitDashboard();
+    return '';
+  }
+
   private emitDashboard(): void {
     this.channel.setActiveJobs(this.jobs.length);
     collaborationScreen.setWanted(IS_SERVER && this.pageReady && (this.channel.isListening() || this.jobs.length > 0));
     const groups = this.taskViews();
+    this.noteFinishedTasks(groups);
     if (IS_SERVER) this.publishWorkerTasks(groups);
     if (!IS_SERVER || !this.pageReady) return;
     const runningNow = this.jobs.filter((job: ActiveJob) => job.workerEpoch === 0).length;
@@ -597,7 +613,8 @@ struct Index {
         this.queuedJobs.delete(job.key); return false;
       }),
       groups: groups,
-      modelSettings: this.modelSettings()
+      modelSettings: this.modelSettings(),
+      usage: { tasks: this.usage.completedTasks, tokens: savedTokens(this.usage), microYuan: this.usage.savedMicroYuan }
     });
   }
 
@@ -941,11 +958,16 @@ struct Index {
     return inferenceSummary(prompt, label);
   }
 
-  private showInferTask(requestId: string, epoch: number, prompt: string, label: string): void {
+  private jobImage(image: string): string {
+    if (image.length === 0) return '';
+    return image.indexOf('data:image/') === 0 ? image : 'data:image/jpeg;base64,' + image;
+  }
+
+  private showInferTask(requestId: string, epoch: number, prompt: string, label: string, image: string = ''): void {
     const question = this.inferQuestion(prompt, label);
     if (this.webActiveId.length === 0) this.webActiveId = requestId;
     this.router.beginSelf();
-    const job = this.createJob(requestId, [{ role: 'user', content: question }], true, epoch);
+    const job = this.createJob(requestId, [{ role: 'user', content: question }], true, epoch, 0, image);
     if (job.input === undefined) job.input = prompt;
     if (this.isComputeHub()) this.taskObserver.begin(job, label, this.selfComputeLabel());
     this.jobs.push(job);
@@ -997,10 +1019,11 @@ struct Index {
   }
 
   /** Hub: a forwarded agent request gets the same task card as a local one, labelled with its device. */
-  private showRelayTask(requestId: string, chatEpoch: number, workerEpoch: number, messages: ChatMessage[], label: string): void {
+  private showRelayTask(requestId: string, chatEpoch: number, workerEpoch: number, messages: ChatMessage[], label: string,
+    image: string = ''): void {
     const question = this.inferQuestion(messages[messages.length - 1].content, label);
     if (this.webActiveId.length === 0) this.webActiveId = requestId;
-    const job = this.createJob(requestId, [{ role: 'user', content: question }], true, chatEpoch, workerEpoch);
+    const job = this.createJob(requestId, [{ role: 'user', content: question }], true, chatEpoch, workerEpoch, image);
     if (job.input === undefined) job.input = messages.map((item: ChatMessage): string => '[' + item.role + ']\n' + item.content).join('\n\n');
     if (this.isComputeHub()) this.taskObserver.begin(job, label, this.selfComputeLabel());
     this.jobs.push(job);
@@ -1615,6 +1638,7 @@ struct Index {
     }
     hilog.info(0, 'NearbyChat', 'finished request=%{public}s reason=%{public}s', id, update.finishReason || 'error');
     if (this.webActiveId === id) this.webActiveId = '';
+    if (update.finishReason === 'cancelled') job.phase = 'cancelled';
     this.completeJob(id, job.epoch, update.text, !!update.error);
   }
 
@@ -1680,6 +1704,7 @@ struct Index {
       job.endedAt = Date.now();
       job.error = error;
       if (text && job.answer.length === 0) job.answer = text;
+      this.noteUsage(job);
       if (this.isComputeHub() && job.peer) {
         this.deviceSpeed.record(job.workerEpoch, job.endedAt - job.startedAt,
           (job.input === undefined ? 0 : job.input.length) + job.answer.length, error);
@@ -1705,6 +1730,23 @@ struct Index {
       this.pendingBId = '';
       this.queueJob(followId, follow);
     }
+  }
+
+  /** Successful local calls only. Forwarded work is counted by the device that ran it. */
+  private noteUsage(job: ActiveJob): void {
+    if (job.error || job.workerEpoch !== 0 || job.phase === 'cancelled') return;
+    const taskKey = job.taskId !== undefined && job.taskId.length > 0 ? Index.jobKey(job.epoch, job.taskId) : '';
+    if (!recordLocalCall(this.usage, job.key, taskKey, job.metrics?.promptTokens, job.metrics?.completionTokens, job.endedAt)) return;
+    saveUsage(this.filesDir, this.usage);
+  }
+
+  /** A parent task counts once, after this device has already recorded one of its calls. */
+  private noteFinishedTasks(groups: TaskGroupView[]): void {
+    let changed = false;
+    for (const group of groups) {
+      if (group.phase === 'done' && recordFinishedTask(this.usage, group.key)) changed = true;
+    }
+    if (changed) saveUsage(this.filesDir, this.usage);
   }
 
   /** Clears the finished-task list only; running tasks stay so their results still arrive. */
@@ -1748,7 +1790,7 @@ struct Index {
       Web({ src: $rawfile('peer-chat.html'), controller: this.controller })
         .javaScriptAccess(true)
         .domStorageAccess(false)
-        .javaScriptProxy({ object: this.bridge, name: 'chatBridge', methodList: ['send', 'stop', 'connect', 'prepare', 'pickImage', 'clear', 'clearImage', 'selectModel', 'models', 'setOutputMode'], controller: this.controller })
+        .javaScriptProxy({ object: this.bridge, name: 'chatBridge', methodList: ['send', 'stop', 'connect', 'prepare', 'pickImage', 'clear', 'clearImage', 'selectModel', 'models', 'setOutputMode', 'usageSettings', 'saveUsageSettings'], controller: this.controller })
         .onPageEnd(() => {
           this.pageReady = true;
           this.channel.subscribe(

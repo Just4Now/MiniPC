@@ -50,8 +50,10 @@
     .model-settings { padding:16px; border:1px solid var(--line); border-radius:16px; background:#fff; }
     .model-fields { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; margin-top:12px; }
     .model-field { display:flex; flex:1 1 210px; min-width:0; flex-direction:column; gap:6px; font-size:13px; color:var(--muted); }
-    .model-field select { width:100%; min-width:0; min-height:44px; padding:8px; border:1px solid var(--line); border-radius:10px; background:#f7f9fd; color:var(--ink); font:inherit; }
+    .model-field select, .model-field input { width:100%; min-width:0; min-height:44px; padding:8px; border:1px solid var(--line); border-radius:10px; background:#f7f9fd; color:var(--ink); font:inherit; }
+    .model-field input:disabled { opacity:.55; }
     .model-apply { min-height:44px; border:0; border-radius:10px; padding:8px 16px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+    .usage-reset { background:#fff; color:var(--accent); border:1px solid var(--line); }
     .model-apply:disabled { opacity:.45; cursor:default; }
     .model-hint { margin:10px 0 0; font-size:13px; color:var(--muted); line-height:1.5; }
     .stat { flex:1; max-width:200px; padding:10px 12px; border-radius:16px; background:#fff; display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
@@ -131,9 +133,12 @@
     .jobs { font-size:13px; padding:2px 5px; }
     .task-panel { position:relative; display:flex; flex-direction:column; min-height:0; flex:1; background:#fff; border-radius:18px; border:1px solid var(--line); overflow:hidden; }
     .task-toolbar { padding:20px 22px 0; flex-shrink:0; }
-    .task-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-    .task-heading h2 { margin:0; font-size:21px; font-weight:650; }
-    .task-hint { margin:6px 0 16px; font-size:14px; line-height:1.5; color:var(--muted); }
+    .task-heading { display:flex; align-items:center; gap:12px; }
+    .task-heading h2 { margin:0; font-size:24px; font-weight:650; flex-shrink:0; }
+    .usage-stats { display:flex; align-items:baseline; gap:14px; min-width:0; margin-left:2px; padding-left:14px; border-left:1px solid var(--line); }
+    .usage-stat { display:flex; align-items:baseline; gap:6px; white-space:nowrap; }
+    .usage-stat span { font-size:14px; font-weight:550; color:var(--muted); }
+    .usage-stat b { font-size:18px; font-weight:680; color:var(--ink); font-variant-numeric:tabular-nums; }
     .clear-tasks { margin:0; padding:8px; white-space:nowrap; }
     .filters { display:flex; gap:20px; border-bottom:1px solid var(--line); }
     .filter { border:0; padding:10px 4px; background:none; color:var(--muted); font:inherit; font-size:16px; cursor:pointer; border-bottom:2px solid transparent; }
@@ -204,8 +209,10 @@
       .app { padding:12px; }
       #devices { max-height:28vh; }
       .task-columns { display:none; }
-      .task-hint { margin-bottom:6px; }
-      .task-heading h2 { font-size:18px; }
+      .task-heading h2 { font-size:21px; }
+      .usage-stats { gap:10px; padding-left:10px; }
+      .usage-stat span { font-size:13px; }
+      .usage-stat b { font-size:16px; }
       .task-row { grid-template-columns:minmax(0,1fr) auto; gap:10px; padding:16px 0; }
       .task-info { grid-column:1 / -1; }
       .task-worker { grid-column:1; grid-row:2; }
@@ -232,13 +239,13 @@
     .round-list select{width:100%;min-width:0;box-sizing:border-box;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:inherit;font:inherit;font-size:12px}
     .task-result{white-space:normal;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:5px}
       .task-view-switch{display:flex;gap:3px;background:#f1f3f8;border-radius:10px;padding:3px;margin-left:auto}.task-view-switch button{font:inherit;font-size:13px;white-space:nowrap;border:0;border-radius:7px;padding:7px 10px;background:none;color:var(--muted);cursor:pointer}.task-view-switch button[aria-pressed=true]{background:#fff;color:var(--accent);box-shadow:0 1px 4px #25356715}
-    .flow-view{flex:1;min-height:0;overflow:auto;padding:14px 22px 20px;overscroll-behavior:contain}.flow-view[hidden],#history[hidden],#historyControls[hidden],#taskCount[hidden]{display:none}
-    .flow-labels{display:grid;grid-template-columns:154px 146px 1fr;min-width:920px;color:var(--muted);font-size:12px;padding-bottom:16px}.flow-labels span:last-child{padding-left:30px}.flow-scene{position:relative;min-height:400px}.flow-wires{position:absolute;inset:0;width:100%;height:100%;overflow:visible}.flow-wire{fill:none;stroke:#bfc8d8;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.flow-wire.active{stroke:#4e6bd6;stroke-width:3.6}
-    .flow-phone{position:absolute;left:2px;width:88px;display:flex;flex-direction:column;align-items:center;gap:9px;font-size:13px;font-weight:600}.flow-phone>svg{width:44px;height:66px;color:#89919f}.flow-phone>span{text-align:center;overflow-wrap:anywhere}.flow-router{position:absolute;left:154px;width:64px;height:52px;display:grid;place-items:center;border:1.5px solid #a9b1c0;border-radius:11px;background:#fff;color:#858fa2}.flow-router>svg{width:40px;height:30px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linejoin:round;stroke-linecap:round}.flow-router>span{position:absolute;top:61px;color:var(--ink);white-space:nowrap;font-size:13px;font-weight:600}.flow-router.active{border-color:#849ae6;background:#f6f8ff;color:#4e6bd6}
-    .flow-compute{position:absolute;display:grid;grid-template-columns:104px minmax(210px,1fr) minmax(210px,1fr);gap:18px;padding:18px;border:1px solid #e4e9ee;border-radius:17px;background:#fcfdfd}.flow-computer{align-self:start;display:flex;flex-direction:column;align-items:center;gap:9px;font-size:14px;font-weight:600;padding-top:4px}.flow-computer>svg{width:100px;height:70px;color:#89919f}.flow-computer>span{text-align:center;overflow-wrap:anywhere}.flow-memory{width:92px;margin-top:0}.flow-memory>i{height:8px;background:#e3e6eb;border-radius:5px;display:block;overflow:hidden}.flow-memory em{height:100%;display:block;border-radius:5px}.flow-memory>span{display:flex;justify-content:space-between;font-size:11px;line-height:14px;font-weight:450;color:#626b85;margin-top:5px}.flow-memory b{font-weight:600}.flow-computer small{font-size:12px;color:#94640e}.flow-lane{display:flex;flex-direction:column;gap:8px;min-width:0}.flow-lane h3,.flow-pending h3{font-size:15px;font-weight:600;color:#127650;line-height:18px;margin:0 0 2px}.flow-lane h3:before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block;vertical-align:3px;margin-right:6px}.flow-lane.queue h3,.flow-pending h3{color:#866018}.flow-idle{font-size:12px;color:var(--muted);padding:16px 0}
-    .flow-task{height:50px;min-height:50px;display:grid;grid-template-columns:30px minmax(36px,1fr) auto;gap:10px;align-items:center;border:1px solid #d4e9de;border-radius:9px;background:#f2faf6;padding:8px 12px;color:#385745;font:inherit;text-align:left;position:relative}.flow-task:is(button){cursor:pointer}.flow-task>span{font-size:18px;font-weight:550}.flow-type{width:30px;height:30px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}.flow-task b{font:620 26px/1 ui-monospace,'SFMono-Regular',Consolas,monospace;letter-spacing:.2px;font-variant-numeric:tabular-nums;color:#237b58}.flow-task.working:before{content:'';position:absolute;left:-1px;top:12px;bottom:12px;width:2px;background:#71b391}.flow-task.waiting{border-color:#ebdfc4;background:#fff9ed;color:#866018}.flow-task.waiting b{color:#866018}.flow-packet{position:absolute;left:0;top:0;width:44px;height:44px;border:1.5px solid #849ae6;border-radius:9px;background:#f4f6ff;color:#4e6bd6;display:grid;place-items:center;offset-rotate:0deg;animation:flow-travel 1.2s linear infinite;pointer-events:none;z-index:1}.flow-packet .flow-type{width:28px;height:28px}@keyframes flow-travel{from{offset-distance:0%}to{offset-distance:100%}}@media(prefers-reduced-motion:reduce){.flow-packet{animation:none;offset-distance:65%}}
-    .flow-pending{min-width:600px;margin-top:12px;margin-left:300px}.flow-pending>div{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}.flow-pending .flow-task{width:220px}.flow-empty{position:absolute;left:330px;top:150px;color:var(--muted);font-size:14px}
-    @media(max-width:959px){.flow-view{padding:12px 16px;min-height:230px}.task-view-switch button{font-size:12px;padding:7px}.task-toolbar{padding:14px 16px 0}.task-heading{flex-wrap:wrap}.task-view-switch{margin-left:0}.clear-tasks{font-size:12px}.task-hint{font-size:12px}.stats{overflow-x:auto}.stat{flex:0 0 auto;min-width:130px}}
+    .flow-view{flex:1;min-height:0;overflow:auto;padding:18px 22px 24px;overscroll-behavior:contain}.flow-view[hidden],#history[hidden],#historyControls[hidden],#taskCount[hidden]{display:none}
+    .flow-labels{display:grid;grid-template-columns:190px 180px 1fr;min-width:960px;color:var(--muted);font-size:16px;padding-bottom:20px}.flow-labels span:last-child{padding-left:36px}.flow-scene{position:relative;min-height:460px}.flow-wires{position:absolute;inset:0;width:100%;height:100%;overflow:visible}.flow-wire{fill:none;stroke:#bfc8d8;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}.flow-wire.active{stroke:#4e6bd6;stroke-width:4.2}
+    .flow-phone{position:absolute;left:8px;width:120px;display:flex;flex-direction:column;align-items:center;gap:10px;font-size:17px;font-weight:650}.flow-phone>svg{width:60px;height:90px;color:#89919f}.flow-phone>span{text-align:center;overflow-wrap:anywhere}.flow-router{position:absolute;left:190px;width:84px;height:70px;display:grid;place-items:center;border:1.8px solid #a9b1c0;border-radius:14px;background:#fff;color:#858fa2}.flow-router>svg{width:54px;height:40px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linejoin:round;stroke-linecap:round}.flow-router>span{position:absolute;top:82px;left:50%;transform:translateX(-50%);color:var(--ink);white-space:nowrap;font-size:16px;font-weight:650;text-align:center;line-height:1.25}.flow-router.active{border-color:#849ae6;background:#f6f8ff;color:#4e6bd6}
+    .flow-compute{position:absolute;display:grid;grid-template-columns:220px minmax(260px,1fr);gap:22px;padding:22px;border:1px solid #e4e9ee;border-radius:18px;background:#fcfdfd}.flow-computer{align-self:start;display:flex;flex-direction:column;align-items:center;gap:10px;font-size:18px;font-weight:650;padding-top:4px}.flow-pc-mark{position:relative;width:136px;height:96px}.flow-pc-mark>svg{width:136px;height:96px;color:#89919f;display:block}.flow-pc-local{position:absolute;left:19%;top:11%;width:62%;height:49%;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#3d5bdb;letter-spacing:.12em;pointer-events:none}.flow-computer>span{text-align:center;white-space:nowrap}.flow-memory{width:120px;margin-top:0}.flow-memory>i{height:10px;background:#e3e6eb;border-radius:6px;display:block;overflow:hidden}.flow-memory em{height:100%;display:block;border-radius:6px}.flow-memory>span{display:flex;justify-content:space-between;font-size:13px;line-height:16px;font-weight:450;color:#626b85;margin-top:6px}.flow-memory b{font-weight:650}.flow-computer small{font-size:14px;color:#94640e}.flow-lane{display:flex;flex-direction:column;gap:10px;min-width:0}.flow-lane h3{font-size:18px;font-weight:650;color:var(--ok);line-height:22px;margin:0 0 4px}.flow-lane h3:before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor;display:inline-block;vertical-align:3px;margin-right:8px}.flow-lane.busy h3{color:var(--busy)}.flow-idle{font-size:15px;color:var(--muted);padding:20px 0}
+    .flow-task{min-height:72px;display:grid;grid-template-columns:56px minmax(80px,1fr) auto;gap:12px;align-items:center;border:1px solid #d4e9de;border-radius:11px;background:#f2faf6;padding:10px 14px;color:#385745;font:inherit;text-align:left;position:relative}.flow-task:is(button){cursor:pointer}.flow-task>span{font-size:16px;font-weight:550;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}.flow-photo{width:56px;height:56px;object-fit:cover;border-radius:8px;background:#dce8e1}.flow-type{width:40px;height:40px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}.flow-task b{font:650 28px/1 ui-monospace,'SFMono-Regular',Consolas,monospace;letter-spacing:.2px;font-variant-numeric:tabular-nums;color:#237b58}.flow-task.working:before{content:'';position:absolute;left:-1px;top:14px;bottom:14px;width:3px;background:#71b391}.flow-packet{position:absolute;left:0;top:0;width:56px;height:56px;border:1.8px solid #849ae6;border-radius:11px;background:#f4f6ff;color:#4e6bd6;display:grid;place-items:center;offset-rotate:0deg;animation:flow-travel 1.2s linear infinite;pointer-events:none;z-index:1}.flow-packet .flow-type{width:36px;height:36px}@keyframes flow-travel{from{offset-distance:0%}to{offset-distance:100%}}@media(prefers-reduced-motion:reduce){.flow-packet{animation:none;offset-distance:65%}}
+    .flow-empty{position:absolute;left:410px;top:170px;color:var(--muted);font-size:16px}
+    @media(max-width:959px){.flow-view{padding:12px 16px;min-height:230px}.task-view-switch button{font-size:12px;padding:7px}.task-toolbar{padding:14px 16px 0}.task-heading{flex-wrap:wrap}.task-view-switch{margin-left:0}.clear-tasks{font-size:12px}.stats{overflow-x:auto}.stat{flex:0 0 auto;min-width:130px}.usage-stats{flex-basis:100%;margin-left:0;padding-left:0;border-left:0}}
 
 </style>
 </head>
@@ -285,6 +292,28 @@
         <p class="model-hint">适用于本机执行的文字和图片推理。保存后对新请求生效，正在进行的任务保持原设置。</p>
         <p id="outputModeMessage" class="model-hint" role="status" aria-live="polite"></p>
       </section>
+      <h3 class="settings-label">累计统计 · 本机</h3>
+      <section class="model-settings">
+        <div class="model-fields">
+          <label class="model-field" for="usageTasks">累计完成<input id="usageTasks" inputmode="numeric" autocomplete="off"></label>
+          <label class="model-field" for="usageTokens">节省 token<input id="usageTokens" inputmode="numeric" autocomplete="off"></label>
+          <label class="model-field" for="usageYuan">节省金额（元）<input id="usageYuan" inputmode="decimal" autocomplete="off"></label>
+        </div>
+        <div class="model-fields">
+          <label class="model-field" for="usagePriceMode">计价方式<select id="usagePriceMode">
+            <option value="flash">DeepSeek Flash 分时价</option>
+            <option value="custom">自定义单价</option>
+          </select></label>
+          <label class="model-field" for="usageInputPrice">输入单价（元 / 百万 token）<input id="usageInputPrice" inputmode="decimal" autocomplete="off"></label>
+          <label class="model-field" for="usageOutputPrice">输出单价（元 / 百万 token）<input id="usageOutputPrice" inputmode="decimal" autocomplete="off"></label>
+        </div>
+        <div class="model-fields">
+          <button id="saveUsage" class="model-apply" type="button" disabled>保存累计设置</button>
+          <button id="resetUsage" class="model-apply usage-reset" type="button">重置累计</button>
+        </div>
+        <p class="model-hint">保存后，推理任务旁的数字立即更新，之后完成的任务按所选计价继续累加。重置只清零这三项。</p>
+        <p id="usageMessage" class="model-hint" role="status" aria-live="polite"></p>
+      </section>
     </section>
     <div class="stats" id="stats"></div>
     <aside class="device-panel" id="devicePanel" aria-label="附近设备">
@@ -293,8 +322,7 @@
     </aside>
     <section class="task-panel" aria-label="本机推理任务">
       <div id="taskToolbar" class="task-toolbar">
-        <div class="task-heading"><h2>推理任务</h2><div id="taskViewSwitch" class="task-view-switch" aria-label="任务视图"><button type="button" data-task-view="flow" aria-pressed="true">协同视图</button><button type="button" data-task-view="history" aria-pressed="false">任务历史</button></div><button id="clearTasks" class="clear-tasks" type="button">清空历史</button></div>
-        <p class="task-hint">设备协同、任务路由与推理状态</p>
+        <div class="task-heading"><h2>推理任务</h2><div id="usageStats" class="usage-stats" aria-label="累计统计"></div><div id="taskViewSwitch" class="task-view-switch" aria-label="任务视图"><button type="button" data-task-view="flow" aria-pressed="true">协同视图</button><button type="button" data-task-view="history" aria-pressed="false">任务详情</button></div><button id="clearTasks" class="clear-tasks" type="button">清空历史</button></div>
         <div id="historyControls" hidden><div id="filters" class="filters" aria-label="筛选推理请求">
           <button class="filter" type="button" data-filter="all" aria-pressed="true">全部</button>
           <button class="filter" type="button" data-filter="running" aria-pressed="false">进行中</button>
@@ -330,6 +358,7 @@
     const sendButton=document.getElementById('send');
     const connectButton=document.getElementById('connect');
     const statsView=document.getElementById('stats');
+    const usageStatsView=document.getElementById('usageStats');
     const devicesView=document.getElementById('devices');
     const pickButton=document.getElementById('pick');
     const preview=document.getElementById('preview');
@@ -346,13 +375,55 @@
     const outputModeView=document.getElementById('outputMode');
     const applyOutputModeButton=document.getElementById('applyOutputMode');
     const outputModeMessage=document.getElementById('outputModeMessage');
+    const usageTasksView=document.getElementById('usageTasks');
+    const usageTokensView=document.getElementById('usageTokens');
+    const usageYuanView=document.getElementById('usageYuan');
+    const usagePriceModeView=document.getElementById('usagePriceMode');
+    const usageInputPriceView=document.getElementById('usageInputPrice');
+    const usageOutputPriceView=document.getElementById('usageOutputPrice');
+    const saveUsageButton=document.getElementById('saveUsage');
+    const resetUsageButton=document.getElementById('resetUsage');
+    const usageMessageView=document.getElementById('usageMessage');
     let outputDraft=false;
+    let usageDraft=false;
     let modelState=null, modelStateSignature='', modelDraft=false, modelPollAt=0;
     function refreshModels(){
       if(!settingsView||settingsView.hidden||typeof window.chatBridge.models!=='function')return;
       try{renderModelSettings(JSON.parse(window.chatBridge.models()));}catch(error){}
     }
-    function openSettings(){if(!settingsView)return;settingsView.hidden=false;refreshModels();}
+    function syncUsagePrices(){
+      const custom=!!usagePriceModeView&&usagePriceModeView.value==='custom';
+      if(usageInputPriceView)usageInputPriceView.disabled=!custom;
+      if(usageOutputPriceView)usageOutputPriceView.disabled=!custom;
+    }
+    function renderUsageSettings(state){
+      if(!state||usageDraft||!usageTasksView||!usageTokensView||!usageYuanView||!usagePriceModeView||!usageInputPriceView||!usageOutputPriceView)return;
+      usageTasksView.value=state.tasks||'0';
+      usageTokensView.value=state.tokens||'0';
+      usageYuanView.value=state.yuan||'0';
+      usagePriceModeView.value=state.priceMode==='custom'?'custom':'flash';
+      usageInputPriceView.value=state.inputYuan||'1';
+      usageOutputPriceView.value=state.outputYuan||'4';
+      syncUsagePrices();
+      if(saveUsageButton)saveUsageButton.disabled=true;
+    }
+    function refreshUsage(){
+      if(!settingsView||settingsView.hidden||typeof window.chatBridge.usageSettings!=='function')return;
+      try{renderUsageSettings(JSON.parse(window.chatBridge.usageSettings()));}catch(error){}
+    }
+    function usagePayload(){
+      return JSON.stringify({
+        tasks:usageTasksView.value,tokens:usageTokensView.value,yuan:usageYuanView.value,
+        priceMode:usagePriceModeView.value,inputYuan:usageInputPriceView.value,outputYuan:usageOutputPriceView.value
+      });
+    }
+    function usageEdited(){
+      usageDraft=true;
+      if(saveUsageButton)saveUsageButton.disabled=false;
+      syncUsagePrices();
+      if(usageMessageView)usageMessageView.textContent='点击“保存累计设置”后生效。';
+    }
+    function openSettings(){if(!settingsView)return;settingsView.hidden=false;refreshModels();refreshUsage();}
     function closeSettings(){if(settingsView)settingsView.hidden=true;}
     const openSettingsButton=document.getElementById('openSettings');
     const closeSettingsButton=document.getElementById('closeSettings');
@@ -410,6 +481,28 @@
         outputModeMessage.textContent=error||'已保存，将用于后续推理请求。';
         if(!error){modelState.streaming=outputModeView.value==='stream';outputDraft=false;applyOutputModeButton.disabled=true;}
       }catch(error){outputModeMessage.textContent='输出方式未保存，请重试。';}
+    });
+    function bindUsage(view){if(!view)return;view.addEventListener('input',usageEdited);view.addEventListener('change',usageEdited);}
+    bindUsage(usageTasksView);bindUsage(usageTokensView);bindUsage(usageYuanView);
+    bindUsage(usagePriceModeView);bindUsage(usageInputPriceView);bindUsage(usageOutputPriceView);
+    if(saveUsageButton)saveUsageButton.addEventListener('click',()=>{
+      if(!usageDraft||!usageTasksView)return;
+      try{
+        const error=window.chatBridge.saveUsageSettings(usagePayload());
+        if(error){if(usageMessageView)usageMessageView.textContent=error;return;}
+        usageDraft=false;
+        if(usageMessageView)usageMessageView.textContent='已保存，标题旁的数字已更新。';
+        refreshUsage();
+      }catch(error){if(usageMessageView)usageMessageView.textContent='累计设置未保存，请重试。';}
+    });
+    if(resetUsageButton)resetUsageButton.addEventListener('click',()=>{
+      try{
+        const error=window.chatBridge.saveUsageSettings(JSON.stringify({reset:true}));
+        if(error){if(usageMessageView)usageMessageView.textContent=error;return;}
+        usageDraft=false;
+        if(usageMessageView)usageMessageView.textContent='已清零累计显示，计价方式保持不变。';
+        refreshUsage();
+      }catch(error){if(usageMessageView)usageMessageView.textContent='累计未重置，请重试。';}
     });
     const filtersView=document.getElementById('filters');
     const taskCountView=document.getElementById('taskCount');
@@ -634,6 +727,15 @@
       if(text==='本机'||text.indexOf('算力设备')===0||text.indexOf('聊天设备')===0) return text;
       return role==='chat'?'聊天设备':'算力设备';
     }
+    function computeKindLabel(device){
+      const caps=device&&device.capabilities;
+      if(Array.isArray(caps)&&caps.indexOf('vision')>=0)return '多模态';
+      if(device&&device.model&&String(device.model).toLowerCase().indexOf('vl')>=0)return '多模态';
+      return '纯文本';
+    }
+    function computeDisplayName(device){
+      return publicJobName(device&&device.name,'compute')+'-'+computeKindLabel(device);
+    }
     function updateButton(){
       const local=localRunning();
       sendButton.disabled=!local&&(!available||(!promptInput.value.trim()&&!pendingImage));
@@ -653,6 +755,12 @@
       return (seconds>=3600?pad(Math.floor(seconds/3600))+':':'')+pad(Math.floor(seconds/60)%60)+':'+pad(seconds%60);
     }
     function flowIcon(kind){return '<svg class="flow-type" aria-hidden="true"><use href="#flow-task-'+(kind==='image'?'image':'text')+'"/></svg>';}
+    function flowPhoto(image){
+      return typeof image==='string'&&/^data:image\/(jpeg|png|webp|gif);base64,/.test(image)?image:'';
+    }
+    function flowTitle(item){
+      return item.question||((item.kind==='image'?'图片':'文本')+'任务');
+    }
     function resolveFlowDevice(id,label,compute){
       const candidates=devices.filter(device=>(device.role==='self'||device.role==='compute')===compute);
       if(id)return candidates.find(device=>device.id===id)||null;
@@ -667,6 +775,7 @@
         const key=jobKey(job)+':'+job.startedAt;
         const phase=job.phase||'running';
         const item={key,jobKey:job.key&&job.key.indexOf('mirror:')===0?undefined:jobKey(job),kind:job.kind||((job.image||/^（附图）/.test(job.question||''))?'image':'text'),
+          question:summaryText(job.question||''),image:flowPhoto(job.image),
           phase,at:job.phaseStartedAt||job.startedAt||now,origin:origin&&origin.id,executor:executor&&executor.id};
         items.push(item);
         // A brief one-shot shows an observed dispatch even when acceptance was faster than painting.
@@ -675,7 +784,8 @@
       }
       for(const job of queuedCalls.concat(mirroredCalls.filter(job=>job.phase==='queued'))){
         if(now-job.startedAt>130000)continue;
-        items.push({key:'waiting:'+jobKey(job),kind:job.kind||'text',phase:'queued',at:job.phaseStartedAt||job.startedAt,
+        items.push({key:'waiting:'+jobKey(job),kind:job.kind||'text',question:summaryText(job.question||''),image:flowPhoto(job.image),
+          phase:'queued',at:job.phaseStartedAt||job.startedAt,
           origin:(resolveFlowDevice(job.originId,job.origin,false)||{}).id,executor:null});
       }
       for(const group of groups){
@@ -687,7 +797,8 @@
           const key='child:'+group.key+':'+child.id;
           if(!flowWaitStarts.has(key))flowWaitStarts.set(key,now);
           const executor=resolveFlowDevice('',child.device,true);
-          items.push({key,groupKey:group.key,childId:child.id,kind:'text',phase:'queued',at:flowWaitStarts.get(key),
+          items.push({key,groupKey:group.key,childId:child.id,kind:'text',question:summaryText(child.input||child.title||''),
+            phase:'queued',at:flowWaitStarts.get(key),
             origin:(resolveFlowDevice('',group.origin,false)||{}).id,executor:executor&&executor.id});
         }
       }
@@ -698,12 +809,13 @@
       return items;
     }
     function flowCard(item){
-      const waiting=item.phase==='queued';
       const action=item.jobKey?' data-flow-detail="'+esc(item.jobKey)+'"':item.groupKey?
         ' data-flow-group="'+esc(item.groupKey)+'" data-flow-child="'+esc(item.childId)+'"':'';
-      const label=(item.kind==='image'?'图片':'文本')+'任务 · '+(waiting?'排队':'推理中');
-      return '<'+(action?'button':'div')+' class="flow-task '+(waiting?'waiting':'working')+'" data-row-key="'+esc(item.key)+'"'+
-        (action?' type="button"'+action:'')+' aria-label="'+label+'">'+flowIcon(item.kind)+'<span>'+(item.kind==='image'?'图片':'文本')+
+      const title=flowTitle(item);
+      const media=item.image?'<img class="flow-photo" alt="" src="'+item.image+'">':flowIcon(item.kind);
+      const label=title+' · 推理中';
+      return '<'+(action?'button':'div')+' class="flow-task working" data-row-key="'+esc(item.key)+'"'+
+        (action?' type="button"'+action:'')+' aria-label="'+esc(label)+'">'+media+'<span>'+esc(title)+
         '</span><b data-flow-clock="'+esc(item.key)+'">'+flowClock(Date.now()-item.at)+'</b></'+(action?'button':'div')+'>';
     }
     function renderFlow(){
@@ -713,41 +825,39 @@
       const chats=devices.filter(device=>device.role!=='self'&&device.role!=='compute');
       const sources=chats.slice();
       if(flowItems.some(item=>!item.origin))sources.push({id:'local-source',name:'本机 / 未知来源',ready:true});
-      const width=Math.max(920,(flowView.clientWidth||984)-44),left=300,rowWidth=width-left-18;
+      const width=Math.max(960,(flowView.clientWidth||1024)-44),left=380,rowWidth=width-left-18;
       let top=8;const rows=computers.map(device=>{
-        const calls=flowItems.filter(item=>item.executor===device.id&&item.phase!=='sending');
-        const active=calls.filter(item=>item.phase!=='queued'),waiting=calls.filter(item=>item.phase==='queued').sort((a,b)=>a.at-b.at);
-        const height=Math.max(174,66+Math.max(active.length,waiting.length)*58),row={device,active,waiting,y:top,height};top+=height+32;return row;
+        const active=flowItems.filter(item=>item.executor===device.id&&item.phase!=='sending'&&item.phase!=='queued');
+        const busy=active.length>0||(typeof device.jobs==='number'?device.jobs:0)>0;
+        const height=Math.max(210,88+Math.max(1,active.length)*96),row={device,active,busy,y:top,height};top+=height+36;return row;
       });
-      const height=Math.max(400,top-24,sources.length*155),center=height/2;
+      const height=Math.max(460,top-24,sources.length*180),center=height/2;
       const sourceY=new Map(sources.map((source,i)=>[source.id,(i+.5)*height/Math.max(1,sources.length)]));
       const targetY=new Map(rows.map(row=>[row.device.id,row.y+row.height/2]));
-      const sourcePath=y=>'M92 '+y+'H118Q128 '+y+' 128 '+(y+(y<center?10:-10))+'V'+(center+(y<center?-10:10))+'Q128 '+center+' 138 '+center+'H154';
-      const targetPath=y=>'M218 '+center+'H240Q250 '+center+' 250 '+(center+(y<center?-10:10))+'V'+(y+(y<center?10:-10))+'Q250 '+y+' 260 '+y+'H'+left;
+      const sourcePath=y=>'M120 '+y+'H148Q158 '+y+' 158 '+(y+(y<center?12:-12))+'V'+(center+(y<center?-12:12))+'Q158 '+center+' 168 '+center+'H190';
+      const targetPath=y=>'M274 '+center+'H300Q310 '+center+' 310 '+(center+(y<center?-12:12))+'V'+(y+(y<center?12:-12))+'Q310 '+y+' 320 '+y+'H'+left;
       const flights=Array.from(flowFlights.values());
       for(const item of flowItems.filter(item=>item.phase==='sending'))if(!flights.some(flight=>flight.key===item.key))flights.push(item);
       const activeSource=new Set(flights.map(item=>item.origin||'local-source')),activeTarget=new Set(flights.map(item=>item.executor));
-      const pending=flowItems.filter(item=>!item.executor&&item.phase==='queued');
-      const signature=JSON.stringify({width,computers,sources,items:flowItems,flights:flights.map(item=>[item.key,item.origin,item.executor])});
+      const signature=JSON.stringify({width,computers,sources,items:flowItems.filter(item=>item.phase!=='queued').map(item=>[item.key,item.kind,item.phase,item.origin,item.executor,item.question||'',item.image?1:0]),flights:flights.map(item=>[item.key,item.origin,item.executor])});
       if(signature!==flowSignature){
         flowSignature=signature;
         const wires='<svg class="flow-wires" viewBox="0 0 '+width+' '+height+'" aria-hidden="true"><defs><marker id="flow-arrow" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="m1 1 5 3-5 3" fill="none" stroke="context-stroke" stroke-width="1.6"/></marker></defs>'+
           sources.map(source=>'<path class="flow-wire '+(activeSource.has(source.id)?'active':'')+'" d="'+sourcePath(sourceY.get(source.id))+'" marker-end="url(#flow-arrow)"/>').join('')+
           rows.map(row=>'<path class="flow-wire '+(activeTarget.has(row.device.id)?'active':'')+'" d="'+targetPath(targetY.get(row.device.id))+'" marker-end="url(#flow-arrow)"/>').join('')+'</svg>';
-        const phones=sources.map(source=>'<div class="flow-phone" data-row-key="source:'+esc(source.id)+'" style="top:'+(sourceY.get(source.id)-45)+'px"><svg aria-hidden="true"><use href="#flow-phone"/></svg><span>'+esc(source.id==='local-source'?'本机 / 未知来源':publicJobName(source.name,'chat'))+'</span></div>').join('');
-        const router='<div class="flow-router '+(flights.length?'active':'')+'" style="top:'+(center-26)+'px"><svg aria-hidden="true" viewBox="0 0 48 36"><rect x="2" y="13" width="10" height="10" rx="2"/><rect x="35" y="2" width="10" height="10" rx="2"/><rect x="35" y="24" width="10" height="10" rx="2"/><path d="M12 18h9q4 0 4-4v-3q0-4 4-4h6M21 18q4 0 4 4v3q0 4 4 4h6"/></svg><span>路由层</span></div>';
+        const phones=sources.map(source=>'<div class="flow-phone" data-row-key="source:'+esc(source.id)+'" style="top:'+(sourceY.get(source.id)-58)+'px"><svg aria-hidden="true"><use href="#flow-phone"/></svg><span>'+esc(source.id==='local-source'?'本机 / 未知来源':publicJobName(source.name,'chat'))+'</span></div>').join('');
+        const router='<div class="flow-router '+(flights.length?'active':'')+'" style="top:'+(center-35)+'px"><svg aria-hidden="true" viewBox="0 0 48 36"><rect x="2" y="13" width="10" height="10" rx="2"/><rect x="35" y="2" width="10" height="10" rx="2"/><rect x="35" y="24" width="10" height="10" rx="2"/><path d="M12 18h9q4 0 4-4v-3q0-4 4-4h6M21 18q4 0 4 4v3q0 4 4 4h6"/></svg><span>路由中心<br>(算力设备1)</span></div>';
         const boxes=rows.map(row=>{
           const d=row.device,mem=typeof d.memUsage==='number'&&Number.isFinite(d.memUsage)&&d.memUsage>=0?Math.min(100,d.memUsage):null;
           const memory='<div class="flow-memory" aria-label="内存 '+(mem===null?'未采集':mem+'%')+'"><i><em style="width:'+(mem===null?0:mem)+'%;background:'+(mem>50?'#e1b43b':'#279a73')+'"></em></i><span>内存<b>'+(mem===null?'—':Math.round(mem)+'%')+'</b></span></div>';
-          return '<section class="flow-compute" data-row-key="compute:'+esc(d.id)+'" style="left:'+left+'px;top:'+row.y+'px;width:'+rowWidth+'px;min-height:'+row.height+'px" aria-label="'+esc(d.name)+'"><div class="flow-computer"><svg aria-hidden="true"><use href="#flow-pc"/></svg><span>'+esc(publicJobName(d.name,'compute'))+'</span>'+memory+(!d.ready?'<small>连接中</small>':'')+'</div><div class="flow-lane"><h3>推理中</h3>'+row.active.map(flowCard).join('')+(!row.active.length?'<span class="flow-idle">'+(d.jobs>0?'设备忙碌 · 无任务明细':'空闲')+'</span>':'')+'</div><div class="flow-lane queue"><h3>排队</h3>'+row.waiting.map(flowCard).join('')+(!row.waiting.length?'<span class="flow-idle">暂无排队</span>':'')+'</div></section>';
+          return '<section class="flow-compute" data-row-key="compute:'+esc(d.id)+'" style="left:'+left+'px;top:'+row.y+'px;width:'+rowWidth+'px;min-height:'+row.height+'px" aria-label="'+esc(computeDisplayName(d))+'"><div class="flow-computer"><div class="flow-pc-mark"><svg aria-hidden="true"><use href="#flow-pc"/></svg>'+(d.role==='self'?'<span class="flow-pc-local">本机</span>':'')+'</div><span>'+esc(computeDisplayName(d))+'</span>'+memory+(!d.ready?'<small>连接中</small>':'')+'</div><div class="flow-lane'+(row.busy?' busy':'')+'"><h3>'+(row.busy?'推理中':'在线')+'</h3>'+row.active.map(flowCard).join('')+(!row.active.length&&row.busy?'<span class="flow-idle">设备忙碌 · 无任务明细</span>':'')+'</div></section>';
         }).join('');
         const packets=flights.filter(item=>targetY.has(item.executor)).map(item=>{
           const y=sourceY.get(item.origin||'local-source')||center;
-          const route=sourcePath(y)+'L218 '+center+targetPath(targetY.get(item.executor)).replace(/^M218 [^H]+/,'');
+          const route=sourcePath(y)+'L274 '+center+targetPath(targetY.get(item.executor)).replace(/^M274 [^H]+/,'');
           return '<div class="flow-packet" data-row-key="packet:'+esc(item.key)+'" aria-label="'+(item.kind==='image'?'图片':'文本')+'任务正在分派" style="offset-path:path(\''+route+'\')">'+flowIcon(item.kind)+'</div>';
         }).join('');
-        renderMarkup(flowView,'<div class="flow-labels" data-row-key="labels"><span>任务发起</span><span>路由分发</span><span>算力执行</span></div><div class="flow-scene" data-row-key="scene" style="width:'+width+'px;height:'+height+'px">'+wires+phones+router+boxes+packets+(!computers.length?'<div class="flow-empty">等待算力设备上线</div>':'')+'</div>'+
-          (pending.length?'<section class="flow-pending" data-row-key="pending"><h3>等待分配</h3><div>'+pending.sort((a,b)=>a.at-b.at).map(flowCard).join('')+'</div></section>':''));
+        renderMarkup(flowView,'<div class="flow-labels" data-row-key="labels"><span>任务发起</span><span>路由分发</span><span>算力执行</span></div><div class="flow-scene" data-row-key="scene" style="width:'+width+'px;height:'+height+'px">'+wires+phones+router+boxes+packets+(!computers.length?'<div class="flow-empty">等待算力设备上线</div>':'')+'</div>');
       }
       updateFlowClocks();
     }
@@ -773,14 +883,30 @@
       detailTab='output';detailTrigger=button;renderDetail(true);if(detailView)focusWithoutScroll(detailView.querySelector('[data-close]'));
     });
 
+    let usageView={tasks:0,tokens:0,microYuan:0};
+    function formatCount(value){
+      const count=Number(value);
+      if(!Number.isSafeInteger(count)||count<0)return '0';
+      return String(count).replace(/\B(?=(\d{3})+(?!\d))/g,',');
+    }
+    function formatYuan(micro){
+      const count=Number(micro);
+      if(!Number.isSafeInteger(count)||count<=0)return '¥0.00';
+      const yuan=count/1000000;
+      return '¥'+(yuan>=1?yuan.toFixed(2):yuan.toFixed(4));
+    }
     function renderStats(){
-      if(!statsView)return;
-      const chats=devices.filter(device=>device.role!=='self'&&device.role!=='compute').length;
-      statsView.innerHTML='<div class="stat"><span>聊天机</span><b>'+chats+'</b></div>'+
-        '<div class="stat"><span>本机推理中</span><b>'+running+'</b></div>'+
-        '<div class="stat"><span>集群推理中</span><b>'+flowItems.filter(item=>item.phase!=='queued'&&item.phase!=='sending').length+'</b></div>'+
-        '<div class="stat"><span>排队</span><b>'+flowItems.filter(item=>item.phase==='queued').length+'</b></div>'+
-        '<div class="stat"><span>发送中</span><b>'+flowItems.filter(item=>item.phase==='sending').length+'</b></div>';
+      if(statsView){
+        const chats=devices.filter(device=>device.role!=='self'&&device.role!=='compute').length;
+        statsView.innerHTML='<div class="stat"><span>聊天机</span><b>'+chats+'</b></div>'+
+          '<div class="stat"><span>本机推理中</span><b>'+running+'</b></div>'+
+          '<div class="stat"><span>集群推理中</span><b>'+flowItems.filter(item=>item.phase!=='queued'&&item.phase!=='sending').length+'</b></div>';
+      }
+      if(!usageStatsView)return;
+      const usage=usageView||{tasks:0,tokens:0,microYuan:0};
+      usageStatsView.innerHTML='<span class="usage-stat"><span>累计完成</span><b>'+formatCount(usage.tasks)+'</b></span>'+
+        '<span class="usage-stat"><span>节省 token</span><b>'+formatCount(usage.tokens)+'</b></span>'+
+        '<span class="usage-stat"><span>节省金额</span><b>'+formatYuan(usage.microYuan)+'</b></span>';
     }
     let devicesCollapsed=false;
     try{devicesCollapsed=localStorage.getItem('devicesCollapsed')==='1';}catch(error){}
@@ -1163,6 +1289,7 @@
         queuedCalls=event.queuedCalls||[];
         mirroredCalls=event.flowCalls||[];
         groups=event.groups||[];
+        usageView=event.usage&&typeof event.usage.tasks==='number'?event.usage:{tasks:0,tokens:0,microYuan:0};
         running=typeof event.running==='number'?event.running:jobs.filter(job=>job.running).length;
         render();return;
       }

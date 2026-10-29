@@ -94,6 +94,45 @@ int main() {
     const int abortsBeforeDeadline = aborts.load();
     assert(Begin(root.string(), "{}", (root / "events.jsonl").string(), 1)); WaitDone();
     assert(aborts == abortsBeforeDeadline + 1); // requester deadline shortens the wait
+    {
+        // One token then silence is idle-stalled; the absolute cap is not used.
+        probeWaitSeconds = 1;
+        const int submitsBeforeIdle = submits.load();
+        const int abortsBeforeIdle = aborts.load();
+        assert(start());
+        while (submits.load() == submitsBeforeIdle) std::this_thread::yield();
+        savedCallback(savedContext, "{\"message\":{\"content\":\"x\"},\"finish_reason\":null}");
+        WaitDone();
+        assert(aborts == abortsBeforeIdle + 1);
+        bool sawIdle = false;
+        {
+            std::lock_guard<std::mutex> lock(State().mutex);
+            for (const auto& event : State().events) {
+                if (event.find("\"event\":\"end\"") != std::string::npos &&
+                    event.find("stalled_idle") != std::string::npos) sawIdle = true;
+            }
+        }
+        assert(sawIdle);
+        // Fresh tokens restart the idle window and let the request finish.
+        const int submitsBeforeKeep = submits.load();
+        const int abortsBeforeKeep = aborts.load();
+        const uintptr_t keepId = start();
+        while (submits.load() == submitsBeforeKeep) std::this_thread::yield();
+        std::atomic<bool> stopFeed{false};
+        std::thread feeder([&] {
+            for (int i = 0; i < 8 && !stopFeed.load(); ++i) {
+                savedCallback(savedContext, "{\"message\":{\"content\":\"y\"},\"finish_reason\":null}");
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            }
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+        CompleteJob(keepId);
+        stopFeed.store(true);
+        feeder.join();
+        WaitDone();
+        assert(aborts == abortsBeforeKeep);
+        probeWaitSeconds = 45;
+    }
     mode = 0;
     probeWaitSeconds = 1;
     mode = 4;

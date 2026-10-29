@@ -32,6 +32,14 @@ export interface PageEvent {
   flowCalls?: JobView[];
   groups?: TaskGroupView[];
   modelSettings?: ModelSettingsView;
+  /** Cumulative local completions. microYuan is 1 yuan = 1_000_000. */
+  usage?: UsageView;
+}
+
+export interface UsageView {
+  tasks: number;
+  tokens: number;
+  microYuan: number;
 }
 
 export interface DeviceView {

@@ -12,10 +12,21 @@ for (const match of html.matchAll(/\bid="([^"]+)"/g)) elements[match[1]] = eleme
 const document = { getElementById: id => elements[id], addEventListener() {}, createElement: element };
 const selections = [];
 const outputModes=[];
+const usageSaves=[];
 let error = '', currentState = null, tick;
+let usageState={tasks:'3',tokens:'20',yuan:'1.5',priceMode:'flash',inputYuan:'1',outputYuan:'4'};
 const window = { chatBridge: { selectModel(name) { selections.push(name); return error; },
   setOutputMode(mode){outputModes.push(mode);return error;},
-  models() { return JSON.stringify(currentState); } } };
+  models() { return JSON.stringify(currentState); },
+  usageSettings() { return JSON.stringify(usageState); },
+  saveUsageSettings(payload) {
+    const patch=JSON.parse(payload);
+    usageSaves.push(patch);
+    if (error) return error;
+    if (patch.reset) usageState=Object.assign({}, usageState, {tasks:'0', tokens:'0', yuan:'0'});
+    else usageState=Object.assign({}, usageState, patch);
+    return '';
+  } } };
 vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], {
   document, window, Date, setInterval(fn) { tick = fn; }
 });
@@ -86,4 +97,33 @@ assert.equal(elements.applyOutputMode.disabled,false,'saved mode updates immedia
 elements.applyOutputMode.handlers.click();assert.equal(outputModes.at(-1),'stream');
 currentState={...state,streaming:false};dashboard(currentState);elements.closeSettings.handlers.click();elements.openSettings.handlers.click();
 assert.equal(elements.outputMode.value,'complete','reopening settings reflects the persisted mode');
+assert.equal(elements.usageTasks.value,'3');
+assert.equal(elements.usageInputPrice.disabled,true,'flash pricing leaves the custom rates unused');
+elements.usageTasks.value='9';
+elements.usageTasks.handlers.input();
+assert.equal(elements.saveUsage.disabled,false);
+dashboard(state);
+assert.equal(elements.usageTasks.value,'9','telemetry keeps unsaved totals');
+elements.usagePriceMode.value='custom';
+elements.usagePriceMode.handlers.change();
+assert.equal(elements.usageInputPrice.disabled,false);
+elements.usageInputPrice.value='2';
+elements.usageOutputPrice.value='8';
+elements.usageYuan.value='1.5';
+elements.usageTokens.value='20';
+elements.saveUsage.handlers.click();
+assert.equal(usageSaves.at(-1).tasks,'9');
+assert.equal(usageSaves.at(-1).priceMode,'custom');
+assert.equal(elements.saveUsage.disabled,true);
+assert.equal(elements.usageMessage.textContent,'已保存，标题旁的数字已更新。');
+elements.resetUsage.handlers.click();
+assert.equal(usageSaves.at(-1).reset,true);
+assert.equal(elements.usageTasks.value,'0');
+assert.equal(elements.usagePriceMode.value,'custom','reset keeps the chosen price');
+assert.equal(elements.usageMessage.textContent,'已清零累计显示，计价方式保持不变。');
+error='保存失败';
+elements.usageTasks.handlers.input();
+elements.saveUsage.handlers.click();
+assert.equal(elements.usageMessage.textContent,'保存失败');
+assert.equal(elements.saveUsage.disabled,false);
 console.log('PASS: output selector, active-request independence, draft preservation and failed-save retry');

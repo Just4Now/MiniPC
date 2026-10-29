@@ -11,9 +11,9 @@ const ACCEPTED_MS = 10000;
  * 带图请求约 50+ 分片 → 超时约 10s + 20s，避免"上传还没完就先判算力端未确认"。
  */
 const ACCEPTED_PER_FRAME_MS = 400;
-// Budget granted to the compute host. It stops generating and reports
-// infer.error inside this window; DELIVERY_GRACE_MS covers that report's trip.
-const DEADLINE_MS = 170000;
+// Matches the compute-node GEWU hard cap (300s). Tokens reset the host idle
+// window; this budget is the wall-clock ceiling the phone will wait.
+const DEADLINE_MS = 300000;
 const DELIVERY_GRACE_MS = 15000;
 // A cancelled request still occupies the host until it acknowledges the stop.
 const STOP_ACK_MS = 8000;

@@ -30,6 +30,8 @@ struct Job {
     bool singleShot = false;
     int waitSeconds = 0;
     int64_t startedMs = 0;
+    int64_t lastResponseMs = 0;
+    std::string stallReason;
     std::string utf8Pending;
 };
 
@@ -279,14 +281,13 @@ static void OnResponse(void* context, const char* response)
     Job* job = FindJobLocked(state, id);
     if (job == nullptr || !job->active || response == nullptr) return;
     EventLocked(state, id, "response", RepairResponse(*job, response));
+    job->lastResponseMs = NowMs();
     if (!job->gotResponse) {
         job->gotResponse = true;
         EventLocked(state, id, "mem_first", ReadMem());
     }
-    if (job->singleShot) {
-        job->completed = true;
-        state.wake.notify_all();
-    }
+    if (job->singleShot) job->completed = true;
+    state.wake.notify_all();
 }
 
 static void FinishJob(Job& job, const std::string& reason)
@@ -305,13 +306,23 @@ static int DefaultWaitSeconds()
 #ifdef GEWU_PROBE_TEST
     return probeWaitSeconds;
 #else
-    // Both streaming and single-shot requests stay inside the chat hard budget.
-    // A missing finish marker must time out without reissuing the same prompt.
-    return 150;
+    // Silence budget. Each new token restarts this window; a live stream is
+    // not killed just because the request has been running for this long.
+    return 300;
 #endif
 }
 
-// Callers derive the wait from the requester's deadline; never exceed the default.
+static int AbsoluteWaitSeconds()
+{
+#ifdef GEWU_PROBE_TEST
+    return 8;
+#else
+    // Wall-clock ceiling from submit. Stops a looping decode that never ends.
+    return 600;
+#endif
+}
+
+// Callers derive the idle window from the requester's deadline; never exceed the default.
 static int WaitSecondsFor(int requested)
 {
     const int ceiling = DefaultWaitSeconds();
@@ -322,9 +333,31 @@ static bool WaitUntilDone(uintptr_t id, Job* owned, int seconds)
 {
     auto& state = State();
     std::unique_lock<std::mutex> lock(state.mutex);
-    return state.wake.wait_for(lock, std::chrono::seconds(seconds), [owned, id] {
-        return owned->id != id || owned->completed || owned->cancelled;
-    });
+    const int absoluteSeconds = AbsoluteWaitSeconds();
+    const int64_t startedMs = owned->startedMs > 0 ? owned->startedMs : NowMs();
+    const int64_t absoluteMs = startedMs + static_cast<int64_t>(absoluteSeconds) * 1000;
+    for (;;) {
+        if (owned->id != id || owned->completed || owned->cancelled) return true;
+        const int64_t now = NowMs();
+        if (now >= absoluteMs) {
+            owned->stallReason = std::string("stalled_limit:") + std::to_string(absoluteSeconds);
+            return false;
+        }
+        const int64_t idleFrom = owned->gotResponse ? owned->lastResponseMs : startedMs;
+        const int64_t idleDeadline = idleFrom + static_cast<int64_t>(seconds) * 1000;
+        if (now >= idleDeadline) {
+            owned->stallReason = std::string("stalled_idle:") + std::to_string(seconds);
+            return false;
+        }
+        int64_t slice = idleDeadline - now;
+        const int64_t remainAbs = absoluteMs - now;
+        if (remainAbs < slice) slice = remainAbs;
+        const int64_t marked = owned->lastResponseMs;
+        if (slice < 1) slice = 1;
+        state.wake.wait_for(lock, std::chrono::milliseconds(slice), [owned, id, marked] {
+            return owned->id != id || owned->completed || owned->cancelled || owned->lastResponseMs != marked;
+        });
+    }
 }
 
 // No completion callback before the wait ends means this generation did not
@@ -441,12 +474,6 @@ static Attempt SubmitOnce(const std::string& attributes, const std::string& requ
             return Attempt::SubmitFailed;
         }
         bool signaled = WaitUntilDone(id, owned, waitSeconds);
-        bool grace = false;
-        {
-            std::lock_guard<std::mutex> lock(state.mutex);
-            grace = owned->id == id && owned->gotResponse && !owned->completed && !owned->cancelled;
-        }
-        if (grace) signaled = WaitUntilDone(id, owned, 5) || signaled;
         bool abort = false;
         {
             std::lock_guard<std::mutex> lock(state.mutex);
@@ -493,8 +520,14 @@ static void Run(std::string modelPath, std::string request, uintptr_t id, Job* o
     Event(id, "attributes", attributes);
     const Attempt attempt = SubmitOnce(attributes, request, id, owned, sessionKey);
     if (attempt == Attempt::CreateFailed) FinishJob(*owned, "create_failed");
-    else if (attempt == Attempt::Stalled) FinishJob(*owned, "stalled");
-    else FinishJob(*owned, "closed");
+    else if (attempt == Attempt::Stalled) {
+        std::string reason;
+        {
+            std::lock_guard<std::mutex> lock(State().mutex);
+            reason = owned->stallReason.empty() ? "stalled" : owned->stallReason;
+        }
+        FinishJob(*owned, reason);
+    } else FinishJob(*owned, "closed");
 }
 
 static uintptr_t Begin(const std::string& modelPath, const std::string& request, const std::string& path,

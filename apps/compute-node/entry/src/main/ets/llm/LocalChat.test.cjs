@@ -209,7 +209,27 @@ console.log('PASS: opt-in session reuse remains isolated by selected model');
   session.start([{role:'user',content:'interrupted'}],u=>updates.push(u),'interrupted');
   nativeEvents.push(JSON.stringify({event:'response',id:String(nextId),payload:JSON.stringify({message:{content:'partial'},finish_reason:null})}));
   nativeEvents.push(JSON.stringify({event:'end',id:String(nextId),payload:'closed'}));consumeTick();
-  assert.ok(updates.at(-1).error,'native cleanup without a finish marker is an interrupted stream');session.close();
+  assert.equal(updates.at(-1).error,'模型会话已结束，但没有收到结束标记。');session.close();
+}
+{
+  const session=new LocalChat('/files'),updates=[];
+  session.start([{role:'user',content:'limit'}],u=>updates.push(u),'limit');
+  nativeEvents.push(JSON.stringify({event:'response',id:String(nextId),payload:JSON.stringify({message:{content:'深圳'},finish_reason:null})}));
+  nativeEvents.push(JSON.stringify({event:'end',id:String(nextId),payload:'stalled_limit:600'}));consumeTick();
+  assert.equal(updates.at(-1).error,'生成已达600秒上限仍未结束，已停止。');session.close();
+}
+{
+  const session=new LocalChat('/files'),updates=[];
+  session.start([{role:'user',content:'idle'}],u=>updates.push(u),'idle');
+  nativeEvents.push(JSON.stringify({event:'response',id:String(nextId),payload:JSON.stringify({message:{content:'深圳'},finish_reason:null})}));
+  nativeEvents.push(JSON.stringify({event:'end',id:String(nextId),payload:'stalled_idle:300'}));consumeTick();
+  assert.equal(updates.at(-1).error,'模型已超过300秒没有继续输出，已停止。');session.close();
+}
+{
+  const session=new LocalChat('/files'),updates=[];
+  session.start([{role:'user',content:'empty-limit'}],u=>updates.push(u),'empty-limit');
+  nativeEvents.push(JSON.stringify({event:'end',id:String(nextId),payload:'stalled'}));consumeTick();
+  assert.equal(updates.at(-1).error,'超过时限仍未开始输出，已停止。');session.close();
 }
 console.log('PASS: streaming terminal detection, empty/late chunks, usage and explicit single-shot fallback');
 {
